@@ -1,5 +1,33 @@
 // supabase/functions/search-flights/utils.ts
+// ─────────────────────────────────────────────────────────
+// Flight Data Normalization, Validation, Dedup (Production)
+// ─────────────────────────────────────────────────────────
 import { NormalizedOffer, FlightSegment } from "./types.ts";
+
+// ── Duration Parsing ──
+
+function parseIsoDurationToMinutes(iso: string): number {
+  if (!iso || typeof iso !== "string") return 0;
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
+  if (!match) return 0;
+  return (parseInt(match[1] || "0", 10) * 60) + parseInt(match[2] || "0", 10);
+}
+
+function toDurationMinutes(raw: any): number {
+  if (typeof raw === "number") {
+    return raw > 600 ? Math.round(raw / 60) : raw;
+  }
+  if (typeof raw === "string") return parseIsoDurationToMinutes(raw);
+  return 0;
+}
+
+function toIsoString(raw: any): string {
+  if (!raw || typeof raw !== "string") return "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw;
+  return raw;
+}
+
+// ── Amadeus Normalizer (preserves _rawOffer for Pricing API) ──
 
 export function normalizeFlightOffer(
   offer: any,
@@ -42,13 +70,15 @@ export function normalizeFlightOffer(
   const segments: FlightSegment[] = segmentsRaw.map((seg: any) => ({
     carrier: ctx.carriers[seg.carrierCode] || seg.carrierCode,
     flight_number: `${seg.carrierCode}${seg.number}`,
-    aircraft: ctx.aircraftMap[seg.aircraft?.code] || seg.aircraft?.code,
+    aircraft: ctx.aircraftMap[seg.aircraft?.code] || seg.aircraft?.code || "",
     origin: seg.departure?.iataCode,
     destination: seg.arrival?.iataCode,
     departing_at: seg.departure?.at,
     arriving_at: seg.arrival?.at,
-    duration: seg.duration,
+    duration: seg.duration || "",
   }));
+
+  const price = Number(offer.price?.total ?? 0);
 
   return {
     id: offer.id,
@@ -58,30 +88,38 @@ export function normalizeFlightOffer(
       : '',
     from: fromIata,
     to: toIata,
-    depart: firstSegment?.departure?.at || '',
-    arrive: lastSegment?.arrival?.at || '',
-    duration: firstItinerary?.duration || '',
-    price: Number(offer.price?.total ?? 0).toFixed(2),
+    depart: toIsoString(firstSegment?.departure?.at),
+    arrive: toIsoString(lastSegment?.arrival?.at),
+    duration: toDurationMinutes(firstItinerary?.duration),
+    price,
+    estimated_price: price,
     currency: offer.price?.currency || 'USD',
+    price_status: 'estimated',
+    trust_level: 'estimated',
+    reliability: 0.70,
+    bookable: false,             // ★ HARD RULE: false until Pricing API confirms
     stops: Math.max(0, segments.length - 1),
     cabin_class: cabin,
     segments,
     source: 'amadeus',
     _carrierCode: carrierCode,
+    _rawOffer: offer,  // ★ Preserved for Pricing API — stripped before response
   };
 }
 
+// ── Validation (STRICT) ──
+
 export function isValidOffer(offer: NormalizedOffer): boolean {
-  const priceNum = Number(offer.price);
-  if (isNaN(priceNum) || priceNum <= 0) return false;
+  if (typeof offer.price !== "number" || isNaN(offer.price) || offer.price <= 0) return false;
   if (!offer.depart || !offer.arrive) return false;
-  
-  // Enforce strict real-world source validation
-  const validSources = ['amadeus', 'kiwi'];
+
+  const validSources: string[] = ['amadeus', 'kiwi', 'cloudfares'];
   if (!validSources.includes(offer.source)) return false;
-  
-  return true; 
+
+  return true;
 }
+
+// ── Deduplication ──
 
 export function deduplicateOffers(
   offers: NormalizedOffer[],
@@ -90,12 +128,11 @@ export function deduplicateOffers(
 
   for (const o of offers) {
     const carrier = o._carrierCode || 'UNKNOWN';
-    // Key based on carrier, departure time, and arrival time to identify the same flight
     const key = `${carrier}-${o.depart}-${o.arrive}`;
 
     const existing = seen.get(key);
-    const currentPrice = Number(o.price) || Infinity;
-    const existingPrice = Number(existing?.price) || Infinity;
+    const currentPrice = o.price || Infinity;
+    const existingPrice = existing?.price || Infinity;
 
     if (!existing || currentPrice < existingPrice) {
       seen.set(key, o);
@@ -105,25 +142,7 @@ export function deduplicateOffers(
   return Array.from(seen.values());
 }
 
-export function normalizeKiwiOffer(o: any): NormalizedOffer {
-  return {
-    id: `kiwi-${crypto.randomUUID()}`,
-    airline: o.airline || 'Unknown',
-    airline_logo: o.airline ? `https://images.kiwi.com/airlines/64/${o.airline}.png` : '',
-    from: o.from || '',
-    to: o.to || '',
-    depart: o.depart || '',
-    arrive: o.arrive || '',
-    duration: '', // Kiwi format varies
-    price: Number(o.price || 0).toFixed(2),
-    currency: 'USD',
-    stops: 0, // Simplified
-    cabin_class: 'economy',
-    segments: [],
-    source: 'kiwi',
-    _carrierCode: o.airline
-  };
-}
+// ── Market Data Annotation ──
 
 export function annotateWithMarketData(
   offers: NormalizedOffer[],
@@ -132,16 +151,16 @@ export function annotateWithMarketData(
   if (kiwiOffers.length === 0) return offers;
 
   return offers.map(offer => {
-    if (offer.source === 'kiwi') return offer; // Don't compare kiwi with itself
-    
+    if (offer.source === 'kiwi') return offer;
+
     const match = kiwiOffers.find(k => {
       const sameAirline = k._carrierCode === offer._carrierCode;
       if (!sameAirline) return false;
 
-      const amadeusTime = new Date(offer.depart).getTime();
+      const offerTime = new Date(offer.depart).getTime();
       const kiwiTime = new Date(k.depart).getTime();
-      const diffMinutes = Math.abs(amadeusTime - kiwiTime) / (1000 * 60);
-      
+      const diffMinutes = Math.abs(offerTime - kiwiTime) / (1000 * 60);
+
       return diffMinutes <= 30;
     });
 
@@ -155,4 +174,11 @@ export function annotateWithMarketData(
 
     return offer;
   });
+}
+
+// ── Strip Internal Fields (before sending to client) ──
+
+export function stripInternalFields(offer: NormalizedOffer): Omit<NormalizedOffer, '_rawOffer' | '_carrierCode'> {
+  const { _rawOffer, _carrierCode, ...clean } = offer;
+  return clean;
 }

@@ -1,3 +1,4 @@
+/// <reference path="../deno.d.ts" />
 // supabase/functions/search-flights/kiwiRapid.ts
 // Kiwi.com Cheap Flights — RapidAPI Provider
 // Endpoint: kiwi-com-cheap-flights.p.rapidapi.com
@@ -59,8 +60,14 @@ export async function checkKiwiRapidStatus(): Promise<KiwiRapidDiagnostic> {
   return diag;
 }
 
-// ---- Helper: parse ISO duration (PT2H30M) → human-readable ----
+// ---- Helper: convert seconds to minutes ----
 
+function secondsToMinutes(seconds?: number): number {
+  if (!seconds || seconds <= 0) return 0;
+  return Math.round(seconds / 60);
+}
+
+/** Legacy: format seconds as ISO duration string (for FlightSegment.duration) */
 function formatDuration(seconds?: number): string {
   if (!seconds || seconds <= 0) return "";
   const h = Math.floor(seconds / 3600);
@@ -149,7 +156,7 @@ function normalizeKiwiItinerary(itinerary: any): NormalizedOffer | null {
       itinerary.deep_link ||
       null;
 
-    // Duration
+    // Duration (in seconds from API → convert to minutes)
     const durationSec = itinerary.outbound?.duration || itinerary.duration?.total || itinerary.fly_duration || 0;
 
     return {
@@ -162,9 +169,14 @@ function normalizeKiwiItinerary(itinerary: any): NormalizedOffer | null {
       to: destCode.toUpperCase(),
       depart: departTime,
       arrive: arriveTime,
-      duration: typeof durationSec === "number" ? formatDuration(durationSec) : String(durationSec),
-      price: price.toFixed(2),
+      duration: typeof durationSec === "number" ? secondsToMinutes(durationSec) : 0,
+      price,
+      estimated_price: price,
       currency: itinerary.price?.currency || "USD",
+      price_status: "estimated",
+      trust_level: "estimated",
+      reliability: 0.70,
+      bookable: false,
       stops: Math.max(0, outboundSectors.length - 1),
       cabin_class: itinerary.cabin_class || "economy",
       segments,
@@ -204,6 +216,18 @@ function normalizeKiwiFlat(item: any): NormalizedOffer | null {
       duration: "",
     }));
 
+    // Parse fly_duration (could be "2h 30m" string or seconds number)
+    let durationMin = 0;
+    if (typeof item.fly_duration === "number") {
+      durationMin = secondsToMinutes(item.fly_duration);
+    } else if (typeof item.fly_duration === "string") {
+      const hm = item.fly_duration.match(/(\d+)h\s*(\d+)?m?/);
+      if (hm) durationMin = parseInt(hm[1] || "0", 10) * 60 + parseInt(hm[2] || "0", 10);
+    }
+    if (typeof item.duration === "number") {
+      durationMin = secondsToMinutes(item.duration);
+    }
+
     return {
       id: item.id || `kiwi-rapid-${crypto.randomUUID()}`,
       airline: carrierCode || "Unknown",
@@ -214,9 +238,14 @@ function normalizeKiwiFlat(item: any): NormalizedOffer | null {
       to: (item.flyTo || "").toUpperCase(),
       depart: item.local_departure || "",
       arrive: item.local_arrival || "",
-      duration: item.fly_duration || "",
-      price: price.toFixed(2),
+      duration: durationMin,
+      price,
+      estimated_price: price,
       currency: "USD",
+      price_status: "estimated",
+      trust_level: "estimated",
+      reliability: 0.70,
+      bookable: false,
       stops: Math.max(0, (item.route?.length || 1) - 1),
       cabin_class: "economy",
       segments,
@@ -314,7 +343,7 @@ export async function fetchKiwiRapidFlights(
       return [];
     }
 
-    const valid = normalized.filter((o): o is NormalizedOffer => o !== null && Number(o.price) > 0);
+    const valid = normalized.filter((o): o is NormalizedOffer => o !== null && o.price > 0);
     console.log(`[KIWI_RAPID] Normalized ${valid.length} valid offers`);
     return valid;
   } catch (err: any) {

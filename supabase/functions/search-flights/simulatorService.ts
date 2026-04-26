@@ -1,5 +1,2 @@
-// Simulator Service Disabled
-export function simulateFlights() {
-  console.error("SIMULATOR_DISABLED: Real data only policy enforced.");
-  return [];
-}
+// DEPRECATED — Simulator removed. No fake flights in production.
+export {};

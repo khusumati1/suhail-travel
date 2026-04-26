@@ -1,246 +1,226 @@
-// @ts-ignore - Deno import
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { makeCacheKey, getFromCache, setInCache, getInFlight, setInFlight, clearInFlight } from "../../../src/lib/flight/cache.ts";
-import { normalizeFlightOffer, isValidOffer, deduplicateOffers } from "../../../src/lib/flight/flightUtils.ts";
-// Simulator removed permanently – production only
-
-// Helper to safely read env variables
-function getEnv(key: string): string | undefined {
-  return (globalThis as any).Deno?.env?.get(key);
-}
-
-// Simple in-memory rate limiter (per IP, 10 req/min)
-const RATE_LIMIT = 10;
-const WINDOW_MS = 60_000;
-const rateMap = new Map<string, { count: number; reset: number }>();
-
-function checkRateLimit(req: Request): Response | null {
-  const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? 'anonymous';
-  const now = Date.now();
-  const entry = rateMap.get(ip) ?? { count: 0, reset: now + WINDOW_MS };
-  if (now > entry.reset) {
-    entry.count = 0;
-    entry.reset = now + WINDOW_MS;
-  }
-  if (entry.count >= RATE_LIMIT) {
-    return new Response(JSON.stringify({ error: 'Rate limit exceeded' }), {
-      status: 429,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-  entry.count += 1;
-  rateMap.set(ip, entry);
-  return null;
-}
+/// <reference path="../deno.d.ts" />
+import { makeCacheKey, getFromCache, setInCache, getInFlight, setInFlight, clearInFlight } from "./cache.ts";
+import { normalizeFlightOffer, isValidOffer, deduplicateOffers, annotateWithMarketData } from "./utils.ts";
+import { amadeusRequest } from "./amadeus.ts";
+import { fetchKiwiRapidFlights, checkKiwiRapidStatus } from "./kiwiRapid.ts";
+import { SearchParams } from "./types.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
+};
 
-// --- Amadeus Auth ---
-let amadeusToken: string | null = null;
-let tokenExpiresAt = 0;
-
-async function getAmadeusToken(forceRefresh = false): Promise<string> {
-  const now = Date.now();
-  if (!forceRefresh && amadeusToken && now < tokenExpiresAt - 60_000) return amadeusToken;
-
-  console.log('[search-flights] Fetching new Amadeus token...');
-  const clientId = getEnv('AMADEUS_CLIENT_ID');
-  const clientSecret = getEnv('AMADEUS_CLIENT_SECRET');
-  if (!clientId || !clientSecret) {
-    console.error('[search-flights] Amadeus credentials not configured');
-    throw new Error('Amadeus credentials not configured');
-  }
-
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: clientId,
-    client_secret: clientSecret,
-  });
-
-  const isProduction = clientId !== 'ClGqIyNpegB0F26hf19bUquZfqsemvX5' && getEnv('AMADEUS_ENV') === 'production';
-  const tokenUrl = isProduction ? "https://api.amadeus.com/v1/security/oauth2/token" : "https://test.api.amadeus.com/v1/security/oauth2/token";
-
-  const resp = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    console.error('[search-flights] Amadeus auth failed:', resp.status, errText);
-    throw new Error(`Amadeus auth failed: ${resp.status} ${errText}`);
-  }
-
-  const data = await resp.json();
-  amadeusToken = data.access_token;
-  tokenExpiresAt = now + data.expires_in * 1000;
-  console.log('[search-flights] Amadeus token refreshed. Expires in:', data.expires_in);
-  return amadeusToken!;
-}
-
-// Helper to safely fetch from Amadeus API
-async function amadeusFetch(url: string, options?: RequestInit, retryCount = 0): Promise<any> {
-  const token = await getAmadeusToken(retryCount > 0);
-  const resp = await fetch(url, {
-    ...options,
-    headers: {
-      ...options?.headers,
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "Accept": "application/json"
+/**
+ * Structured Logging Utility
+ */
+function log(level: "info" | "error" | "fatal", event: string, metadata: Record<string, any> = {}, error: any = null) {
+  const mem = Deno.memoryUsage();
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    event,
+    metadata: { 
+      ...metadata, 
+      mem_rss_mb: Math.round(mem.rss / 1024 / 1024) 
     },
-  });
-  
-  if (!resp.ok) {
-    if (resp.status === 401 && retryCount === 0) {
-      console.warn('[search-flights] Amadeus token expired or invalid, retrying auth...');
-      return amadeusFetch(url, options, 1);
-    }
-    const errorData = await resp.json().catch(() => ({}));
-    console.error(`[search-flights] Amadeus API error: ${resp.status}`, errorData);
-    throw new Error(`Amadeus API error: ${resp.status}`, { cause: errorData });
-  }
-  return resp.json();
+    error: error ? { 
+      type: error.name || 'Error', 
+      message: error.message 
+    } : null
+  };
+  console.log(JSON.stringify(entry));
 }
 
-serve(async (req: Request) => {
-  // Rate limiting
-  const rlResponse = checkRateLimit(req);
-  if (rlResponse) return rlResponse;
+Deno.serve(async (req: Request) => {
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID();
 
+  // 1. Handle CORS
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return new Response('ok', { headers: corsHeaders });
+  }
+
+  // 2. Explicit Auth Header Check (Hardened)
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader) {
+    log('error', 'missing_auth', { requestId });
+    return new Response(JSON.stringify({
+      success: false,
+      error: "MISSING_AUTH_HEADER",
+      message: "Authorization header is required (User JWT or Anon Key)"
+    }), { 
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  // --- Debug Endpoint Handling ---
+  const url = new URL(req.url);
+  if (url.pathname.includes('/debug/kiwi-status')) {
+    const diagnostic = await checkKiwiRapidStatus();
+    return new Response(JSON.stringify({
+      success: diagnostic.isValid,
+      error: diagnostic.isValid ? null : "INVALID_RAPIDAPI_KEY",
+      message: diagnostic.isValid 
+        ? "RapidAPI configuration is valid and connected." 
+        : "RapidAPI key is missing, invalid, or rejected.",
+      debug: diagnostic,
+      requestId
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200
+    });
   }
 
   try {
-    const rawBody = await req.text();
-    let body: any = {};
-    try {
-      body = rawBody ? JSON.parse(rawBody) : {};
-    } catch (e) {
-      return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-    // ---- latency start ----
-    const startTime = Date.now();
-
-    const { origin, destination, departure_date, return_date, passengers, cabin_class } = body;
-
-    if (!origin || !destination || !departure_date) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required fields: origin, destination, departure_date' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-    // ---- cache key generation ----
-    const cacheKey = makeCacheKey({ origin, destination, departure_date, return_date, passengers, cabin_class });
-
-    // ---- cache hit check ----
-    const cached = getFromCache<any>(cacheKey);
-    if (cached) {
-      console.log('[FLIGHT SEARCH] cache hit', { cacheKey });
-      const latencyMs = Date.now() - startTime;
-      console.log('[FLIGHT SEARCH]', { cache: 'hit', latencyMs });
-      return new Response(JSON.stringify(cached), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    // 2. Validate Method
+    if (req.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'METHOD_NOT_ALLOWED' }), { 
+        status: 405, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
     }
 
-    // ---- request coalescing ----
-    const inflight = getInFlight<any>(cacheKey);
-    if (inflight) {
-      console.log('[FLIGHT SEARCH] request coalesced', { cacheKey });
-      const result = await inflight;
-      const latencyMs = Date.now() - startTime;
-      console.log('[FLIGHT SEARCH]', { cache: 'coalesced', latencyMs });
-      return new Response(JSON.stringify(result), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    // 3. Safe Body Parsing
+    const body: SearchParams = await req.json().catch(() => ({}));
+    if (!body.origin || !body.destination || !body.departure_date) {
+      return new Response(JSON.stringify({ error: 'INVALID_PARAMS', details: 'origin, destination, and departure_date are required' }), { 
+        status: 400, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
     }
 
-    let travelClass = cabin_class ? cabin_class.toUpperCase() : 'ECONOMY';
-    if (travelClass === 'PREMIUM_ECONOMY') travelClass = 'PREMIUM_ECONOMY';
+    const route = `${body.origin.toUpperCase()}-${body.destination.toUpperCase()}`;
+    const cacheKey = makeCacheKey(body);
     
-    const params = new URLSearchParams({
-      originLocationCode: origin,
-      destinationLocationCode: destination,
-      departureDate: departure_date,
-      adults: String(passengers?.adults || 1),
-      max: '15'
+    // 4. Cache Strategy (L1 Memory)
+    const cached = getFromCache(cacheKey);
+    if (cached) {
+      log('info', 'cache_hit', { requestId, route });
+      return new Response(JSON.stringify({ ...cached, from_cache: true, requestId }), { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+
+    // 5. Request Coalescing (In-flight protection)
+    const inflight = getInFlight(cacheKey);
+    if (inflight) {
+      log('info', 'request_coalesced', { requestId, route });
+      const result = await inflight;
+      return new Response(JSON.stringify(result), { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+
+    // 6. Resilient Fetch Task
+    const task = (async () => {
+      try {
+        const amadeusParams = new URLSearchParams({
+          originLocationCode: body.origin.toUpperCase(),
+          destinationLocationCode: body.destination.toUpperCase(),
+          departureDate: body.departure_date,
+          adults: String(body.passengers?.adults || 1),
+          currencyCode: 'USD',
+        });
+
+        if (body.return_date) amadeusParams.append('returnDate', body.return_date);
+        if (body.cabin_class && body.cabin_class.toLowerCase() !== 'economy') {
+          amadeusParams.append('travelClass', body.cabin_class.toUpperCase());
+        }
+
+        // Fetch both providers in parallel
+        const [amadeusData, kiwiOffers] = await Promise.all([
+          amadeusRequest(`/v2/shopping/flight-offers?${amadeusParams.toString()}`, {
+            retries: 2,
+            timeoutMs: 15000
+          }).catch(err => {
+            log('error', 'amadeus_skip', { requestId, route, error: err.message });
+            return null;
+          }),
+          fetchKiwiRapidFlights(body).catch(err => {
+            log('error', 'kiwi_rapid_skip', { requestId, route, error: err.message });
+            return [];
+          })
+        ]);
+
+        const dict = amadeusData?.dictionaries || {};
+        const rawAmadeusOffers = amadeusData?.data || [];
+        
+        // Normalize Amadeus Results
+        const amadeusNormalized = rawAmadeusOffers.map((o: any) => normalizeFlightOffer(o, {
+          origin: body.origin,
+          destination: body.destination,
+          carriers: dict.carriers || {},
+          aircraftMap: dict.aircraft || {},
+          cabin_class: body.cabin_class
+        })).filter(isValidOffer);
+
+        // Kiwi results are already normalized by kiwiRapid.ts
+        const kiwiNormalized = (kiwiOffers || []).filter(isValidOffer);
+
+        // Deduplicate and then Annotate with Market Comparison
+        const baseOffers = deduplicateOffers([...amadeusNormalized, ...kiwiNormalized]);
+        const annotatedOffers = annotateWithMarketData(baseOffers, kiwiOffers || []);
+        const finalOffers = annotatedOffers.map(({ _carrierCode, ...rest }) => rest);
+
+        const diagnostic = await checkKiwiRapidStatus();
+
+        const isGuest = authHeader?.includes(Deno.env.get('SUPABASE_ANON_KEY') || 'never-match');
+
+        const result = { 
+          offers: finalOffers, 
+          total: finalOffers.length, 
+          status: 'success',
+          authMode: isGuest ? 'guest' : 'user',
+          trust_message: finalOffers.length > 0 
+            ? "تم جلب البيانات من مزودين عالميين معتمدين" 
+            : `لم نجد رحلات حقيقية حالياً. (المصدر 1: ${amadeusData ? 'متصل' : 'خطأ'}, المصدر 2: ${kiwiOffers.length > 0 ? 'متصل' : 'خطأ'})`,
+          debug: finalOffers.length === 0 ? diagnostic : undefined,
+          requestId
+        };
+
+        if (finalOffers.length > 0) {
+          setInCache(cacheKey, result);
+        }
+        return result;
+
+      } catch (e: any) {
+        log('error', 'upstream_failure', { requestId, route }, e);
+        throw e;
+      } finally {
+        clearInFlight(cacheKey);
+      }
+    })();
+
+    setInFlight(cacheKey, task);
+    const finalResult = await task;
+
+    return new Response(JSON.stringify(finalResult), { 
+      status: 200, 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
     });
 
-    if (return_date) params.append('returnDate', return_date);
-    if (passengers?.children) params.append('children', String(passengers.children));
-    if (passengers?.infants) params.append('infants', String(passengers.infants));
-    if (travelClass) params.append('travelClass', travelClass);
+  } catch (err: any) {
+    const msg = err.message || "";
+    const isUpstream = msg.includes('FETCH') || 
+                       msg.includes('AMADEUS') || 
+                       msg.includes('KIWI') || 
+                       msg.includes('API_') || 
+                       msg.includes('UPSTREAM_');
+    
+    log('fatal', 'handler_crash', { requestId, isUpstream, msg }, err);
+    
+    const diagnostic = await checkKiwiRapidStatus();
 
-    // Environment detection
-    const clientId = getEnv('AMADEUS_CLIENT_ID') || 'ClGqIyNpegB0F26hf19bUquZfqsemvX5';
-    const IS_PRODUCTION = clientId !== 'ClGqIyNpegB0F26hf19bUquZfqsemvX5' && getEnv('AMADEUS_ENV') === 'production';
-    const baseUrl = IS_PRODUCTION ? "https://api.amadeus.com" : "https://test.api.amadeus.com";
-
-    const endpoint = `${baseUrl}/v2/shopping/flight-offers?${params.toString()}`;
-    console.log('[search-flights] Fetching from Amadeus:', endpoint);
-
-    // Track promise for coalescing
-    const fetchPromise = (async () => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); 
-        const data = await amadeusFetch(endpoint, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        return data;
-    })();
-    setInFlight(cacheKey, fetchPromise);
-
-    let amadeusData: any;
-    try {
-      amadeusData = await fetchPromise;
-    } catch (apiError: any) {
-      console.error("[search-flights] Upstream API error:", apiError.message);
-      amadeusData = { data: [] };
-    } finally {
-      clearInFlight(cacheKey);
-    }
-
-    let rawOffers = amadeusData.data || [];
-
-    // SMART HYBRID SYSTEM TRIGGER
-    // No simulator fallback – production only
-
-    const dictionaries = amadeusData.dictionaries || {};
-    const carriers = dictionaries.carriers || {};
-    const aircraftMap = dictionaries.aircraft || {};
-
-    // Transform offers to the simplified format
-    const offers = rawOffers.map((offer: any) =>
-        normalizeFlightOffer(offer, {
-          origin,
-          destination,
-          carriers,
-          aircraftMap,
-          cabin_class,
-        })
-      );
-      const validOffers = offers.filter(isValidOffer);
-      const dedupedOffers = deduplicateOffers(validOffers);
-      // Strip internal _carrierCode before responding
-      const safeOffers = dedupedOffers.map(({ _carrierCode, ...rest }) => rest);
-
-    const latencyMs = Date.now() - startTime;
-    // ---- cache store (only successful 200) ----
-    if (safeOffers.length > 0) {
-        const payload = { offers: safeOffers, total: safeOffers.length };
-        setInCache(cacheKey, payload);
-        console.log('[FLIGHT SEARCH]', { cache: 'miss', rawCount: rawOffers.length, filteredCount: safeOffers.length, finalCount: safeOffers.length, latencyMs });
-        return new Response(JSON.stringify(payload), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    } else {
-        console.log('[FLIGHT SEARCH]', { cache: 'miss', rawCount: rawOffers.length, filteredCount: 0, finalCount: 0, latencyMs });
-        return new Response(JSON.stringify({ error: 'No flights found' }), { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-  } catch (error: any) {
-    console.error('[search-flights] Fatal Error:', error);
-    return new Response(
-      JSON.stringify({ error: 'Internal Server Error', details: error.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ 
+      status: 'error',
+      error: isUpstream ? 'UPSTREAM_SERVICE_ERROR' : 'INTERNAL_SERVER_ERROR',
+      message: msg,
+      debug: diagnostic,
+      requestId 
+    }), { 
+      status: 200, 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    });
   }
 });

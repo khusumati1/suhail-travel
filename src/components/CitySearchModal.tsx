@@ -219,7 +219,17 @@ export default function CitySearchModal({ open, onOpenChange, onSelect, label, e
   if (isMobile) {
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
-        <DrawerContent className="max-w-md mx-auto max-h-[85vh]">
+        <DrawerContent 
+          className="max-w-md mx-auto max-h-[85vh]"
+          onOpenAutoFocus={(e) => {
+            // Focus the input inside CitySearchContent
+            const input = document.querySelector('input[placeholder="ابحث عن مدينة أو مطار..."]') as HTMLInputElement;
+            if (input) {
+              e.preventDefault();
+              input.focus();
+            }
+          }}
+        >
           <DrawerTitle className="sr-only">{label}</DrawerTitle>
           {content}
         </DrawerContent>
@@ -229,7 +239,17 @@ export default function CitySearchModal({ open, onOpenChange, onSelect, label, e
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg p-0 border-border overflow-hidden" aria-describedby={undefined}>
+      <DialogContent 
+        className="sm:max-w-lg p-0 border-border overflow-hidden" 
+        aria-describedby={undefined}
+        onOpenAutoFocus={(e) => {
+          const input = document.querySelector('input[placeholder="ابحث عن مدينة أو مطار..."]') as HTMLInputElement;
+          if (input) {
+            e.preventDefault();
+            input.focus();
+          }
+        }}
+      >
         <DialogTitle className="sr-only">{label}</DialogTitle>
         {content}
       </DialogContent>

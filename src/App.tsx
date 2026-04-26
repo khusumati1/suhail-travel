@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -49,20 +50,41 @@ const AppRoutes = () => (
   </Routes>
 );
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <ThemeProvider>
-      <AuthProvider>
-        <TooltipProvider>
-          <Toaster />
-          <Sonner />
-          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-            <AppRoutes />
-          </BrowserRouter>
-        </TooltipProvider>
-      </AuthProvider>
-    </ThemeProvider>
-  </QueryClientProvider>
-);
+const App = () => {
+  // Global Accessibility Fix: Use 'inert' when a modal is open to prevent "Blocked aria-hidden" warnings
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      const isLocked = document.body.hasAttribute('data-scroll-locked');
+      const containers = document.querySelectorAll('.mobile-container');
+      
+      containers.forEach(container => {
+        if (isLocked) {
+          container.setAttribute('inert', '');
+        } else {
+          container.removeAttribute('inert');
+        }
+      });
+    });
+
+    observer.observe(document.body, { attributes: true, attributeFilter: ['data-scroll-locked'] });
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <AuthProvider>
+          <TooltipProvider>
+            <Toaster />
+            <Sonner />
+            <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+              <AppRoutes />
+            </BrowserRouter>
+          </TooltipProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
+  );
+};
 
 export default App;

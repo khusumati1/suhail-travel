@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { getAuthHeaders } from '@/lib/supabaseClient';
-import { fallbackFlights } from '@/lib/fallbackData';
 
 export interface DuffelOffer {
   id: string;
@@ -52,13 +51,11 @@ export function useFlightSearch() {
   const [offers, setOffers] = useState<DuffelOffer[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isSimulated, setIsSimulated] = useState(false);
 
   const searchFlights = async (params: SearchParams) => {
     setLoading(true);
     setError(null);
     setOffers([]);
-    setIsSimulated(false);
 
     const origin = params.origin?.toUpperCase() || '';
     const dest = params.destination?.toUpperCase() || '';
@@ -72,43 +69,33 @@ export function useFlightSearch() {
     }
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      console.log("Auth mode:", session ? "USER" : "GUEST");
+
       const authHeaders = await getAuthHeaders();
       const { data, error: fnError } = await supabase.functions.invoke('search-flights', {
         body: params,
         headers: authHeaders,
       });
 
-      if (fnError || data?.error) {
-        if (fallbackFlights && fallbackFlights.length > 0) {
-          setOffers(fallbackFlights as any);
-          setError('استخدام بيانات احتياطية بسبب خطأ في الاتصال');
-          setIsSimulated(true);
-          return fallbackFlights as any;
-        } else {
-          setOffers([]);
-          setError(null);
-          return [];
-        }
+      if (fnError || data?.error || data?.status === 'error') {
+        // Priority: detailed message > function error > generic error
+        const errorMsg = data?.message || fnError?.message || data?.error || 'حدث خطأ في جلب البيانات';
+        setOffers([]);
+        setError(errorMsg);
+        return [];
       }
 
       setOffers(data?.offers || []);
-      setIsSimulated(!!data?.simulated);
       return data?.offers || [];
     } catch (err: any) {
-      if (fallbackFlights && fallbackFlights.length > 0) {
-        setOffers(fallbackFlights as any);
-        setError('حدث خطأ أثناء البحث. تم استخدام بيانات احتياطية.');
-        setIsSimulated(true);
-        return fallbackFlights as any;
-      } else {
-        setOffers([]);
-        setError(null);
-        return [];
-      }
+      setOffers([]);
+      setError(err.message || 'حدث خطأ غير متوقع');
+      return [];
     } finally {
       setLoading(false);
     }
   };
 
-  return { offers, loading, error, isSimulated, searchFlights };
+  return { offers, loading, error, searchFlights };
 }

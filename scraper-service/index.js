@@ -145,10 +145,10 @@ const SMART_CACHE = {
   }
 };
 
-// Direct Axios instance for speed
+// Direct Axios instance for speed with better headers
 const api = axios.create({
   baseURL: 'https://api.sindibad.iq/api/',
-  timeout: 15000,
+  timeout: 20000,
   headers: {
     'Accept': 'application/json',
     'appversion': '1.254.0',
@@ -156,7 +156,10 @@ const api = axios.create({
     'device': 'web',
     'language': 'ar',
     'Connection': 'keep-alive',
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+    'Origin': 'https://sindibad.iq',
+    'Referer': 'https://sindibad.iq/'
   }
 });
 
@@ -182,13 +185,23 @@ const executeFetchInPage = async (page, path, options = {}) => {
       } catch (e) { /* Access Denied */ }
 
       const headers = {
-        'Accept': 'application/json', 'accept-token': token,
-        'appversion': '1.254.0', 'currencytype': 'IQD',
-        'device': 'web', 'language': 'ar', 'Content-Type': 'application/json',
+        'Accept': 'application/json', 
+        'accept-token': token,
+        'appversion': '1.254.0', 
+        'currencytype': 'IQD',
+        'device': 'web', 
+        'language': 'ar', 
+        'Content-Type': 'application/json',
+        'User-Agent': navigator.userAgent,
         ...fetchOptions.headers
       };
       try {
-        const response = await fetch(url, { ...fetchOptions, headers });
+        const response = await fetch(url, { 
+          ...fetchOptions, 
+          headers,
+          mode: 'cors',
+          credentials: 'omit'
+        });
         if (!response.ok) return { success: false, status: response.status, error: await response.text() };
         return { success: true, data: await response.json() };
       } catch (e) { return { success: false, status: 0, error: e.message }; }

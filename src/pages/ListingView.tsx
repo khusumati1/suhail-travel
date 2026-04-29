@@ -37,7 +37,15 @@ const ListingView = () => {
     setHotelLoading(true);
     try {
       const results = await apiService.searchHotels(params);
-      setHotelOffers(results);
+      if (results.success) {
+        setHotelOffers(results.data);
+      } else {
+        console.error('Hotel search error:', results.errorMessage);
+        setHotelOffers([]);
+      }
+    } catch (error) {
+      console.error('Failed to fetch hotels:', error);
+      setHotelOffers([]);
     } finally {
       setHotelLoading(false);
     }
@@ -79,7 +87,7 @@ const ListingView = () => {
                   </div>
                   <span className="text-sm font-black text-primary">{flightProgress}%</span>
                 </div>
-                <Progress value={typeof flightProgress === 'number' ? flightProgress : (flightProgress as any)?.percentage} className="h-2" />
+                <Progress value={flightProgress} className="h-2" />
               </div>
             </motion.div>
           )}
@@ -95,7 +103,7 @@ const ListingView = () => {
         </AnimatePresence>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {queryType === 'flights' && (flightOffers as any[]).map((f, i) => (
+          {queryType === 'flights' && flightOffers.map((f, i) => (
             <FlightCard key={f.id || i} flight={f} index={i} onClick={() => handleSelect(f)} />
           ))}
           {queryType === 'hotels' && hotelOffers.map((h, i) => (
@@ -124,7 +132,7 @@ const ListingView = () => {
               </DrawerTitle>
             </DrawerHeader>
             <div className="space-y-6 pb-10 overflow-y-auto max-h-[70vh]">
-              {selectedItem && 'airline_name' in selectedItem ? (
+              {selectedItem && 'airline' in selectedItem ? (
                 <div className="space-y-4">
                   <div className="flex justify-between p-5 bg-secondary/50 rounded-2xl border border-border/50">
                      <div className="text-center flex-1">

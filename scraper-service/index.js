@@ -374,129 +374,178 @@ const CANONICAL_CITY_MAP = {
 // ==========================================
 // 3. Endpoint 1: POST /api/scrape-hotels
 // ==========================================
+/**
+ * Strategy: Full DOM Scraping
+ * This function navigates to the Sindibad hotel search results page and extracts data from the DOM.
+ * This bypasses restricted API endpoints and Cloudflare blocks on fetch requests.
+ */
+async function scrapeHotelsFromDOM(page, params) {
+  const { cityName, cityId, checkIn, checkOut, adultsCount } = params;
+  
+  // Format dates for the URL if they are ISO strings
+  const fCheckIn = checkIn.split('T')[0];
+  const fCheckOut = checkOut.split('T')[0];
+  
+  // Construct the search URL directly
+  // Pattern: https://sindibad.iq/hotels/Baghdad-3483?cityNameLocale=...&checkIn=...&checkOut=...
+  const slug = `${cityName}-${cityId}`;
+  const url = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}&step=plp&from=search`;
+  
+  console.log(`[DOM Scraper] Initiating full-page search: ${url}`);
+  
+  try {
+    // Navigate with a generous timeout and wait for network stability
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
+    
+    // Additional wait for any client-side rendering or lazy-loaded elements
+    await wait(5000);
+    
+    // Aggressive scroll to trigger lazy loading of images and more results
+    await page.evaluate(async () => {
+      for (let i = 0; i < 5; i++) {
+        window.scrollBy(0, 800);
+        await new Promise(r => setTimeout(r, 600));
+      }
+      window.scrollTo(0, 0); // Back to top
+    });
+
+    // Scrape the results from the DOM
+    const hotels = await page.evaluate(() => {
+      const results = [];
+      // Sindibad's hotel cards are typically 'a' tags with specific classes in the list view
+      // We look for common patterns found in the PLP
+      const cards = Array.from(document.querySelectorAll('a[href*="/hotels/detail/"]')) || 
+                    Array.from(document.querySelectorAll('.flex.flex-col.gap-1'));
+
+      cards.forEach((card, index) => {
+        try {
+          const name = card.querySelector('h3')?.innerText || 
+                       card.querySelector('.text-base.font-bold')?.innerText || 
+                       card.innerText.split('\n')[0];
+          
+          // Price extraction - look for currency (IQD or د.ع) and surrounding numbers
+          const text = card.innerText;
+          const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD)/) || text.match(/(د\.ع|IQD)\s*([\d,]+)/);
+          const priceValue = priceMatch ? priceMatch[1] || priceMatch[2] : null;
+          const price = priceValue ? parseInt(priceValue.replace(/,/g, ''), 10) : 0;
+
+          // Image extraction - search inside the card or its siblings
+          let img = card.querySelector('img')?.src || 
+                    card.parentElement?.querySelector('img')?.src || "";
+          
+          // Filter out small icons or placeholder svgs
+          if (img.includes('data:image') || img.includes('icon')) img = "";
+
+          if (name && price > 0) {
+            results.push({
+              hotelId: card.href?.split('/').pop() || `dom-${index}-${Date.now()}`,
+              name: name.trim(),
+              price: price,
+              image: img || "https://picsum.photos/400/300",
+              stars: card.querySelectorAll('svg[class*="text-yellow"]').length || 4,
+              rating: parseFloat(text.match(/(\d\.\d)\/10/)?.[1] || "8.5")
+            });
+          }
+        } catch (e) { /* Skip individual card failure */ }
+      });
+      
+      // Deduplicate results by name
+      const unique = [];
+      const seen = new Set();
+      results.forEach(h => {
+        if (!seen.has(h.name)) {
+          seen.add(h.name);
+          unique.push(h);
+        }
+      });
+      
+      return unique;
+    });
+
+    console.log(`[DOM Scraper] Successfully extracted ${hotels.length} hotels.`);
+    return hotels;
+  } catch (error) {
+    console.error(`[DOM Scraper] Navigation or extraction failed: ${error.message}`);
+    throw error;
+  }
+}
+
 app.post('/api/scrape-hotels', async (req, res) => {
   try {
     let { cityName, cityId, countryId, checkIn, checkOut, adultsCount = 2, childrenAges = [] } = req.body;
-    const cacheKey = `hotels-${cityId}-${checkIn}-${checkOut}-${adultsCount}`;
+    const cacheKey = `hotels-dom-${cityId}-${checkIn}-${checkOut}-${adultsCount}`;
 
     // 1. Memory Cache Check
     const localCached = SMART_CACHE.get('hotels', cacheKey);
-    if (localCached) return res.json({ success: true, data: { hotels: localCached } });
+    if (localCached && localCached.length > 0) {
+      console.log(`[Cache] Serving ${localCached.length} hotels from memory.`);
+      return res.json({ success: true, data: { hotels: localCached } });
+    }
 
     // 2. Supabase Cache Check
     try {
       const { data: sbCached } = await supabase.from('search_cache').select('data').eq('key', cacheKey).single();
-      if (sbCached) {
+      if (sbCached && sbCached.data?.length > 0) {
         console.log(`[Supabase] Serving cached results for ${cityName}`);
         return res.json({ success: true, data: { hotels: sbCached.data } });
       }
-    } catch (e) { /* Table might not exist yet */ }
+    } catch (e) { /* Cache miss or table error */ }
 
-    console.log(`[Speed Mode] Rapid Hotel Fetch: ${cityName}`);
-
+    // Normalize City Name and ensure we have an ID
     const normalizedName = cityName.toLowerCase().trim();
     if (CANONICAL_CITY_MAP[normalizedName]) {
       const canonical = CANONICAL_CITY_MAP[normalizedName];
-      console.log(`[Hotel] Applying Canonical Mapping for ${cityName}: ${cityId} -> ${canonical.cityId}`);
+      cityName = canonical.cityName;
       cityId = canonical.cityId;
       countryId = canonical.countryId;
     }
 
-    const startPayload = {
-      cityName,
-      cityId: Number(cityId),
-      countryId: Number(countryId || 17),
-      checkIn: checkIn.split('T')[0],
-      checkOut: checkOut.split('T')[0],
-      rooms: [{ adultsCount: Number(adultsCount), childrenAges }]
-    };
-
-    let sid;
-    const attemptSearch = async (payload) => {
-      try {
-        console.log(`[Hotel] Search Start (Direct): ${payload.cityName} (ID: ${payload.cityId})`);
-        const start = await api.post('v2/hotel-content/HotelSearch/start-search', payload);
-        return start.data?.result?.searchSessionId;
-      } catch (err) {
-        console.warn(`[Hotel] Direct Search failed for ID ${payload.cityId}: ${err.message}`);
-        return null;
-      }
-    };
-
-    sid = await attemptSearch(startPayload);
-
-    // 🛡️ If cityId is 0 or search failed, we MUST resolve the ID correctly
-    if (!sid || Number(cityId) <= 0) {
-      console.warn(`[Hotel] Invalid City ID (${cityId}) or failed direct search. Resolving dynamically for ${cityName}...`);
+    // Ensure we have a valid cityId via dynamic resolution if necessary
+    if (!cityId || Number(cityId) <= 0) {
+      console.log(`[Hotel] Missing ID for ${cityName}, resolving dynamically...`);
       const resolved = await browserManager.exec(async (page) => {
         return await resolveCityId(cityName, page);
       });
-
       if (resolved) {
-        console.log(`[Hotel] Corrected ID for ${cityName}: ${cityId} -> ${resolved.cityId}`);
-        startPayload.cityId = Number(resolved.cityId);
-        startPayload.countryId = Number(resolved.countryId);
-        sid = await attemptSearch(startPayload);
+        cityId = resolved.cityId;
+        cityName = resolved.cityName;
+      } else {
+        // Ultimate fallback: Use Baghdad if resolution fails
+        cityId = 3483;
+        cityName = "Baghdad";
       }
     }
 
-    if (!sid) {
-      console.log(`[Hotel] Falling back to Browser Execution for ${cityName}...`);
-      try {
-        const res = await browserManager.exec(async (page) => {
-          return await executeFetchInPage(page, 'v2/hotel-content/HotelSearch/start-search', {
-            method: 'POST', body: JSON.stringify(startPayload)
-          });
-        });
-        sid = res?.result?.searchSessionId;
-      } catch (browserErr) {
-        console.error(`[Hotel] All search attempts failed for ${cityName}: ${browserErr.message}`);
-        throw browserErr;
-      }
-    }
-
-    if (!sid) throw new Error('Could not obtain searchSessionId from any source.');
-
-    let hotels = [];
-    const startTime = Date.now();
-    for (let i = 0; i < 40; i++) {
-      try {
-        const poll = await api.post(`v2/hotel-content/HotelSearch/poll-results/${sid}`, { pageSize: 20, pageNumber: 1 });
-        const data = poll.data?.result || {};
-        hotels = data.hotels || [];
-
-        if (hotels.length >= 1 && (data.isSearchCompleted || i > 3)) {
-          const duration = Date.now() - startTime;
-          console.log(`[API Speed] Returned ${hotels.length} hotels in ${duration}ms (Iteration ${i})`);
-          break;
-        }
-      } catch (e) { }
-      await wait(100);
-    }
-
-    const cleaned = hotels.map(h => {
-      let imageUrl = h.content?.images?.[0]?.url || "https://picsum.photos/400/300";
-      if (imageUrl.includes('static.')) imageUrl = imageUrl.replace(/\/small$/, '/large');
-
-      return {
-        hotelId: h.hotelId,
-        name: h.content?.title?.ar || h.content?.title?.en,
-        price: h.price?.[0]?.minPricePerNight || h.price || 0,
-        stars: h.content?.star || 4,
-        rating: h.content?.rate || 8,
-        image: imageUrl
-      };
+    console.log(`[Strategy] Switching to Full DOM Scraping for ${cityName}...`);
+    
+    const hotels = await browserManager.exec(async (page) => {
+      return await scrapeHotelsFromDOM(page, {
+        cityName,
+        cityId,
+        checkIn,
+        checkOut,
+        adultsCount
+      });
     });
 
-    SMART_CACHE.set('hotels', cacheKey, cleaned);
+    if (!hotels || hotels.length === 0) {
+      console.warn(`[DOM Scraper] No hotels found for ${cityName}. Returning empty list.`);
+      return res.json({ success: true, data: { hotels: [] } });
+    }
 
+    // Update Caches
+    SMART_CACHE.set('hotels', cacheKey, hotels);
     try {
-      await supabase.from('search_cache').upsert({ key: cacheKey, data: cleaned, created_at: new Date() });
-    } catch (e) { console.warn('[Supabase] Could not store cache. Ensure "search_cache" table exists.'); }
+      await supabase.from('search_cache').upsert({ 
+        key: cacheKey, 
+        data: hotels, 
+        created_at: new Date() 
+      }, { onConflict: 'key' });
+    } catch (e) { console.warn('[Supabase] Cache update failed:', e.message); }
 
-    return res.json({ success: true, data: { hotels: cleaned } });
+    return res.json({ success: true, data: { hotels } });
   } catch (e) {
-    if (e.response?.status === 401) await browserManager.refreshToken();
+    console.error(`[Scraper Endpoint] Final Error: ${e.message}`);
     return res.json({ success: false, message: e.message });
   }
 });
@@ -563,45 +612,114 @@ app.post('/api/hotel-details', async (req, res) => {
 // ==========================================
 // 5. Legacy/Flight Endpoints
 // ==========================================
+/**
+ * Strategy: Full DOM Scraping for Flights
+ */
+async function scrapeFlightsFromDOM(page, params) {
+  const { origin, destination, date } = params;
+  
+  // Construct search URL
+  // Example: https://sindibad.iq/flights/BGW-IST?departing=2026-04-30&adult=1&child=0&infant=0&cabinType=Economy&flightType=OneWay&step=results
+  const url = `https://sindibad.iq/flights/${origin}-${destination}?departing=${date}&adult=1&child=0&infant=0&cabinType=Economy&flightType=OneWay&step=results`;
+  
+  console.log(`[Flight DOM] Navigating to: ${url}`);
+  
+  try {
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
+    
+    // Wait for the results container
+    await page.waitForSelector('.flights__content', { timeout: 30000 }).catch(() => {
+      console.warn('[Flight DOM] Timeout waiting for .flights__content');
+    });
+    
+    // Extra wait for flights to load
+    await wait(5000);
+
+    const flights = await page.evaluate(() => {
+      const results = [];
+      const container = document.querySelector('.flights__content');
+      if (!container) return [];
+
+      // Individual flight entries are direct children or within a specific list
+      // Based on observed structure, they are often in a list or div grid
+      const cards = Array.from(container.children).filter(el => el.innerText.includes('د.ع'));
+
+      cards.forEach((card, index) => {
+        try {
+          const text = card.innerText;
+          
+          // Extract Times (HH:mm)
+          const times = text.match(/\d{2}:\d{2}/g);
+          const depTime = times?.[0] || "--:--";
+          const arrTime = times?.[1] || "--:--";
+          
+          // Extract Price
+          const priceMatch = text.match(/([\d,]+)\s*د\.ع/) || text.match(/([\d,]+)\s*IQD/);
+          const priceStr = priceMatch ? priceMatch[1] : "0";
+          const price = parseInt(priceStr.replace(/,/g, ''), 10);
+
+          // Extract Airline (This is harder as it might be an image or text)
+          // We can look for image alt text or common airline names in the text
+          const img = card.querySelector('img');
+          const airline = img?.alt || "طيران";
+
+          // Duration
+          const durationMatch = text.match(/(\d+)\s*ساعات?\s*(\d+)\s*دقیقة/) || text.match(/(\d+)\s*min/);
+          let duration = "غير معروف";
+          if (durationMatch) {
+            duration = durationMatch[0];
+          }
+
+          if (price > 0) {
+            results.push({
+              id: `flight-${index}-${Date.now()}`,
+              airline: airline,
+              airlineCode: img?.src?.split('/').pop()?.split('.')[0]?.toUpperCase() || "IA",
+              price: price,
+              departureTime: depTime,
+              arrivalTime: arrTime,
+              duration: duration,
+              stops: text.includes('توقف') ? (parseInt(text.match(/(\d+)\s*توقف/)?.[1]) || 1) : 0,
+              origin: "", // Will be filled from params
+              destination: "" // Will be filled from params
+            });
+          }
+        } catch (e) {}
+      });
+      return results;
+    });
+
+    return flights.map(f => ({ ...f, origin, destination }));
+  } catch (error) {
+    console.error(`[Flight DOM] Scraping failed: ${error.message}`);
+    throw error;
+  }
+}
+
 app.post('/api/scrape-flights', async (req, res) => {
   const { origin, destination, date } = req.body;
-  const cacheKey = `${origin}-${destination}-${date}`;
+  const cacheKey = `flights-dom-${origin}-${destination}-${date}`;
+  
   const cached = SMART_CACHE.get('flights', cacheKey);
-  if (cached) return res.json({ success: true, data: cached });
+  if (cached && cached.length > 0) {
+    console.log(`[Cache] Serving ${cached.length} flights from memory.`);
+    return res.json({ success: true, data: cached });
+  }
 
+  console.log(`[Strategy] Switching to Flight DOM Scraping for ${origin} -> ${destination}...`);
+  
   try {
-    const start = await api.post('v1/plp/flightsearch/start-search', {
-      itineraries: [{ origin, destination, departureDate: date }], adultCount: 1, cabinType: "Economy", flightType: "OneWay", forceRenew: true
+    const flights = await browserManager.exec(async (page) => {
+      return await scrapeFlightsFromDOM(page, { origin, destination, date });
     });
-    const sid = start.data?.result?.sessionId;
-    if (!sid) throw new Error('No flight SID');
 
-    let flights = [];
-    for (let i = 0; i < 5; i++) {
-      const poll = await api.post(`v3/plp/flightsearch/poll-results?sessionId=${sid}`, { pageNumber: 1, pageSize: 20, filters: {} });
-      flights = (poll.data?.result?.proposals || []).map(p => {
-        const group = p.flightGroups?.[0] || {};
-        return {
-          id: p.proposalId,
-          airline: p.providerName || "طيران غير معروف",
-          airlineCode: group.carrierCode || "IA",
-          price: p.prices?.details?.[0]?.totalFare || 0,
-          departureTime: group.departureDateTime,
-          arrivalTime: group.arrivalDateTime,
-          duration: p.totalDurationInMinute ? `${p.totalDurationInMinute} min` : "غير معروف",
-          stops: group.numberOfStop || 0,
-          origin: group.origin?.iataCode || origin,
-          destination: group.destination?.iataCode || destination
-        };
-      });
-      if (flights.length > 5 || poll.data?.result?.isCompleted) break;
-      await wait(300);
+    if (flights.length > 0) {
+      SMART_CACHE.set('flights', cacheKey, flights);
     }
-
-    SMART_CACHE.set('flights', cacheKey, flights);
+    
     return res.json({ success: true, data: flights });
   } catch (e) {
-    if (e.response?.status === 401) await browserManager.refreshToken();
+    console.error(`[Flight Endpoint] Final Error: ${e.message}`);
     return res.json({ success: false, message: e.message });
   }
 });

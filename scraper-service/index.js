@@ -65,12 +65,18 @@ class BrowserManager {
       for (let i = 0; i < this.poolSize; i++) {
         const p = await this.browser.newPage();
         
+        // 🛡️ Pipe browser console to Node for better debugging
+        p.on('console', msg => {
+          const text = msg.text();
+          if (text.includes('[Browser]')) console.log(text);
+        });
+        
         // 🛡️ Stealth: Set realistic User-Agent to override headless defaults
         await p.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36');
         
         // 🛡️ Stealth: Set extra headers to mimic a real desktop browser
         await p.setExtraHTTPHeaders({
-          'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+          'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
           'Sec-CH-UA': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
           'Sec-CH-UA-Mobile': '?0',
           'Sec-CH-UA-Platform': '"Windows"',
@@ -78,8 +84,13 @@ class BrowserManager {
 
         await p.setRequestInterception(true);
         p.on('request', r => ['image', 'font', 'media', 'stylesheet'].includes(r.resourceType()) ? r.abort() : r.continue());
-        // Use domcontentloaded for faster/resilient warm up
-        await p.goto('https://sindibad.iq', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => console.warn(`[Browser] Warmup page ${i} warning: ${e.message}`));
+        // Use networkidle2 to ensure Cloudflare challenges have a chance to settle
+        console.log(`[Browser] Warming up page ${i}...`);
+        await p.goto('https://sindibad.iq', { waitUntil: 'networkidle2', timeout: 60000 }).catch(e => console.warn(`[Browser] Warmup page ${i} warning: ${e.message}`));
+        
+        // Initial wait for any immediate Cloudflare redirects
+        await wait(5000);
+        
         this.pages.push({ page: p, busy: false });
       }
       await this.refreshToken();
@@ -96,6 +107,9 @@ class BrowserManager {
     this.isRefreshing = true;
     try {
       const worker = this.pages[0].page;
+      // 🛡️ Ensure Cloudflare has passed before trying to extract token
+      await ensurePageIsReady(worker);
+      
       // Wait up to 5s for token to appear (some pages take time)
       let token = null;
       for (let i = 0; i < 10; i++) {
@@ -169,6 +183,7 @@ const api = axios.create({
     'currencytype': 'IQD',
     'device': 'web',
     'language': 'ar',
+    'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
     'Connection': 'keep-alive',
     'Content-Type': 'application/json',
     'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
@@ -187,45 +202,106 @@ const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // ==========================================
 // 3. Reliable Fetch Utility (The "Nuclear" Fallback)
 // ==========================================
-const executeFetchInPage = async (page, path, options = {}) => {
-  const fullUrl = path.startsWith('http') ? path : `https://api.sindibad.iq/api/${path}`;
+// ==========================================
+// 3. Cloudflare & Navigation Resilience
+// ==========================================
+async function ensurePageIsReady(page) {
   try {
-    const result = await page.evaluate(async (url, fetchOptions) => {
-      let token = 'It2AoD8T7rZ_Pb5bHUxet';
-      try {
-        token = localStorage.getItem('token') ||
-          JSON.parse(localStorage.getItem('auth') || '{}')?.token ||
-          token;
-      } catch (e) { /* Access Denied */ }
-
-      const headers = {
-        'Accept': 'application/json', 
-        'accept-token': token,
-        'appversion': '1.254.0', 
-        'currencytype': 'IQD',
-        'device': 'web', 
-        'language': 'ar', 
-        'Content-Type': 'application/json',
-        'User-Agent': navigator.userAgent,
-        ...fetchOptions.headers
-      };
-      try {
-        const response = await fetch(url, { 
-          ...fetchOptions, 
-          headers,
-          mode: 'cors',
-          credentials: 'omit'
-        });
-        if (!response.ok) return { success: false, status: response.status, error: await response.text() };
-        return { success: true, data: await response.json() };
-      } catch (e) { return { success: false, status: 0, error: e.message }; }
-    }, fullUrl, options);
-
-    if (!result.success) throw new Error(`Browser API Error: ${result.status} - ${result.error}`);
-    return result.data;
+    // Wait for the main Sindibad content or the challenge to pass
+    // We look for common elements like buttons or the search bar
+    await page.waitForFunction(() => {
+      const text = document.body.innerText;
+      const isChallenge = text.includes('Checking your browser') || 
+                         text.includes('Just a moment') ||
+                         !!document.querySelector('#challenge-running');
+      // If we see a button or a specific container, we are likely through
+      const isLoaded = !!document.querySelector('button') || 
+                       !!document.querySelector('input') || 
+                       !!document.querySelector('.search-button');
+      return !isChallenge && isLoaded;
+    }, { timeout: 30000, polling: 1000 });
   } catch (e) {
-    console.error(`[Browser Fetch] Failed: ${e.message}`);
-    throw e;
+    console.warn(`[Cloudflare] Waiter reached timeout or error: ${e.message}`);
+  }
+}
+
+const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
+  // Use the main domain for internal fetch to avoid cross-subdomain issues and 404s
+  const fullUrl = path.startsWith('http') ? path : `https://sindibad.iq/api/${path}`;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      // 1. Ensure Cloudflare has passed
+      await ensurePageIsReady(page);
+
+      // 2. Execute the fetch
+      const result = await page.evaluate(async (url, fetchOptions) => {
+        console.log(`[Browser] Fetching: ${url}`);
+        let token = 'It2AoD8T7rZ_Pb5bHUxet';
+        try {
+          token = localStorage.getItem('token') ||
+            JSON.parse(localStorage.getItem('auth') || '{}')?.token ||
+            token;
+        } catch (e) { /* Access Denied */ }
+
+        const headers = {
+          'Accept': 'application/json', 
+          'accept-token': token,
+          'appversion': '1.254.0', 
+          'currencytype': 'IQD',
+          'device': 'web', 
+          'language': 'ar',
+          'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
+          'Content-Type': 'application/json',
+          'User-Agent': navigator.userAgent,
+          'Origin': 'https://sindibad.iq',
+          'Referer': 'https://sindibad.iq/',
+          ...fetchOptions.headers
+        };
+        try {
+          const response = await fetch(url, { 
+            ...fetchOptions, 
+            headers,
+            mode: 'cors',
+            credentials: 'omit'
+          });
+          const text = await response.text();
+          if (!response.ok) return { success: false, status: response.status, error: text || 'Empty error' };
+          return { success: true, data: JSON.parse(text) };
+        } catch (e) { return { success: false, status: 0, error: e.message }; }
+      }, fullUrl, options);
+
+      if (!result.success) {
+        // If it's a 404, we might have a path issue. Log it clearly.
+        console.warn(`[Cloudflare] Fetch failed (${result.status}) for ${fullUrl}: ${result.error}`);
+        
+        if (result.status === 403) throw new Error('Cloudflare Blocked API (403)');
+        if (result.status === 404) {
+          // Try a quick fallback to api subdomain if the main domain failed
+          if (fullUrl.includes('sindibad.iq/api/')) {
+            const fallbackUrl = fullUrl.replace('sindibad.iq/api/', 'api.sindibad.iq/api/');
+            console.log(`[Cloudflare] 404 fallback: trying ${fallbackUrl}`);
+            return await executeFetchInPage(page, fallbackUrl, options, 0);
+          }
+          throw new Error(`Browser API Error: 404 - Endpoint not found at ${fullUrl}`);
+        }
+        throw new Error(`Browser API Error: ${result.status} - ${result.error}`);
+      }
+      return result.data;
+    } catch (e) {
+      const isContextDestroyed = e.message.includes('Execution context was destroyed') || 
+                                 e.message.includes('Browser API Error: 0') ||
+                                 e.message.includes('Navigation failed');
+
+      if (isContextDestroyed && attempt < retries) {
+        console.warn(`[Cloudflare] Context destroyed or navigation occurred, waiting 3s to retry... (Attempt ${attempt + 1})`);
+        await wait(3000);
+        continue;
+      }
+      
+      console.error(`[Browser Fetch] Failed: ${e.message}`);
+      throw e;
+    }
   }
 };
 
@@ -233,23 +309,29 @@ const executeFetchInPage = async (page, path, options = {}) => {
  * Utility: Resolve City ID and Country ID dynamically from Sindibad's Autocomplete API
  */
 const resolveCityId = async (cityName, page) => {
-  try {
-    const url = `v2/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`;
-    const data = await executeFetchInPage(page, url);
-    const suggestions = data?.result || data || [];
+  // Try multiple endpoint versions for robustness
+  const paths = [
+    `v2/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`,
+    `v1/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`
+  ];
 
-    const cityMatch = suggestions.find(s => s.type === 'CITY' || s.type === 'City') || suggestions[0];
+  for (const path of paths) {
+    try {
+      const data = await executeFetchInPage(page, path);
+      const suggestions = data?.result || data || [];
+      const cityMatch = suggestions.find(s => s.type === 'CITY' || s.type === 'City') || suggestions[0];
 
-    if (cityMatch) {
-      console.log(`[Hotel] Resolved ${cityName} -> ID: ${cityMatch.cityId || cityMatch.id}, Country: ${cityMatch.countryId}`);
-      return {
-        cityId: cityMatch.cityId || cityMatch.id,
-        countryId: cityMatch.countryId || 17,
-        cityName: cityMatch.name || cityMatch.title || cityName
-      };
+      if (cityMatch) {
+        console.log(`[Hotel] Resolved ${cityName} -> ID: ${cityMatch.cityId || cityMatch.id}, Country: ${cityMatch.countryId}`);
+        return {
+          cityId: cityMatch.cityId || cityMatch.id,
+          countryId: cityMatch.countryId || 17,
+          cityName: cityMatch.name || cityMatch.title || cityName
+        };
+      }
+    } catch (e) {
+      console.warn(`[Hotel] Lookup failed for path ${path}: ${e.message}`);
     }
-  } catch (e) {
-    console.error(`[Hotel] Dynamic lookup failed for ${cityName}:`, e.message);
   }
   return null;
 };

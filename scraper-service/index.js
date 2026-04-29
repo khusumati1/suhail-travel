@@ -390,6 +390,8 @@ const CANONICAL_CITY_MAP = {
 async function safeEvaluate(page, fn, args = [], maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // Ensure the page is in a stable ready state before evaluating
+      await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 }).catch(() => {});
       return await page.evaluate(fn, ...args);
     } catch (err) {
       const isContextDestroyed =
@@ -401,7 +403,7 @@ async function safeEvaluate(page, fn, args = [], maxRetries = 3) {
 
       if (isContextDestroyed && attempt < maxRetries) {
         console.warn(`[safeEvaluate] Context destroyed (attempt ${attempt}/${maxRetries}), waiting for page to settle...`);
-        // Wait for the new page to reach a stable network state
+        // Wait for any navigation to finish and a short pause
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
         await wait(2000);
         continue;
@@ -523,11 +525,26 @@ async function scrapeHotelsFromDOM(page, params) {
       // Navigate to the search page (this triggers Sindibad's internal API call)
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
       
+      // Hard wait to give SPA time to settle
+      await wait(5000);
+      
+      // Detect Cloudflare challenge page by title or content and wait for redirect
+      const pageTitle = await page.title();
+      if (pageTitle.includes('Just a moment') || pageTitle.includes('Cloudflare') || pageTitle.includes('Checking your browser')) {
+        console.warn('[Cloudflare] Challenge page detected, waiting up to 30s for redirect...');
+        await page.waitForFunction(() => {
+          const txt = document.body.innerText;
+          return !(txt.includes('Just a moment') || txt.includes('Checking your browser') || txt.includes('Cloudflare'));
+        }, { timeout: 30000, polling: 1000 }).catch(e => console.warn(`[Cloudflare] Wait timeout: ${e.message}`));
+      }
       // Wait for URL to stabilize
       await waitForUrlToStabilize(page, 3000, 15000);
       
       // Wait for Cloudflare to clear
       await ensurePageIsReady(page);
+      
+      // Ensure at least one hotel link is present before scraping
+      await page.waitForSelector('a[href*="/hotel/"]', { visible: true, timeout: 30000 }).catch(() => console.warn('[Hotel Scraper] Hotel link selector not found within timeout'));
       
       // Give the SPA extra time to make its API call and render
       console.log(`[Hotel Scraper] Waiting 10s for SPA to complete API calls...`);
@@ -783,6 +800,16 @@ async function scrapeHotelsFromDOM(page, params) {
         continue;
       }
       
+      // Log a snippet of the page innerText for debugging when no hotels are extracted
+      const innerSnippet = await page.evaluate(() => document.body.innerText.slice(0, 500));
+      console.log(`[Debug] Page innerText first 500 chars:\n${innerSnippet}`);
+      // No hotels extracted – dump page HTML for debugging
+      try {
+        const html = await page.content();
+        const debugPath = path.join(__dirname, 'debug_page.html');
+        fs.writeFileSync(debugPath, html, 'utf8');
+        console.log(`[Debug] Saved page HTML to ${debugPath}`);
+      } catch (dumpErr) { console.error('[Debug] Failed to write HTML dump:', dumpErr.message); }
       return [];
       
     } catch (error) {
@@ -964,6 +991,8 @@ async function scrapeFlightsFromDOM(page, params) {
     try {
       // 1. Navigate with generous timeout
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
+      // Hard wait for SPA rendering
+      await wait(5000);
 
       // 2. Wait for URL to stabilize (catches SPA redirects)
       await waitForUrlToStabilize(page, 3000, 15000);

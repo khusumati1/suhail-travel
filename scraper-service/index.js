@@ -64,7 +64,7 @@ class BrowserManager {
 
       for (let i = 0; i < this.poolSize; i++) {
         const p = await this.browser.newPage();
-        
+
         // 🛡️ Pipe ALL browser console messages to Node for debugging
         p.on('console', msg => {
           const type = msg.type(); // 'log', 'warn', 'error', etc.
@@ -77,27 +77,45 @@ class BrowserManager {
             console.log(`[Browser:${type}] ${text}`);
           }
         });
-        
+
         // 🛡️ Stealth: Set realistic User-Agent to override headless defaults
-        await p.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36');
-        
+        await p.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        // 🛡️ Spoof navigator properties to evade detection
+        await p.evaluateOnNewDocument(() => {
+          Object.defineProperty(navigator, 'webdriver', { get: () => false });
+          Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+          Object.defineProperty(navigator, 'deviceMemory', { get: () => 16 });
+          Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+        });
+
         // 🛡️ Stealth: Set extra headers to mimic a real desktop browser
         await p.setExtraHTTPHeaders({
-          'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
-          'Sec-CH-UA': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+          'Accept-Language': 'ar-IQ,ar;q=0.9,en-US;q=0.9,en;q=0.8',
+          'Sec-CH-UA': '"Google Chrome";v="124", "Not:A-Brand";v="8", "Chromium";v="124"',
           'Sec-CH-UA-Mobile': '?0',
           'Sec-CH-UA-Platform': '"Windows"',
         });
 
         await p.setRequestInterception(true);
-        p.on('request', r => ['image', 'font', 'media', 'stylesheet'].includes(r.resourceType()) ? r.abort() : r.continue());
+        p.on('request', r => {
+          const url = r.url();
+          const whitelist = /sindibad\.iq|cdn\.sindibad\.iq/;
+          const blacklist = /(google-analytics\.com|googletagmanager\.com|facebook\.net|fbcdn\.net|adservice\.google\.com|hotjar\.com)/;
+          if (!whitelist.test(url) && blacklist.test(url)) {
+            return r.abort();
+          }
+          if (['image', 'font', 'media', 'stylesheet'].includes(r.resourceType())) {
+            return r.abort();
+          }
+          return r.continue();
+        });
         // Use networkidle2 to ensure Cloudflare challenges have a chance to settle
         console.log(`[Browser] Warming up page ${i}...`);
         await p.goto('https://sindibad.iq', { waitUntil: 'networkidle2', timeout: 60000 }).catch(e => console.warn(`[Browser] Warmup page ${i} warning: ${e.message}`));
-        
+
         // Initial wait for any immediate Cloudflare redirects
         await wait(5000);
-        
+
         this.pages.push({ page: p, busy: false });
       }
       await this.refreshToken();
@@ -116,7 +134,7 @@ class BrowserManager {
       const worker = this.pages[0].page;
       // 🛡️ Ensure Cloudflare has passed before trying to extract token
       await ensurePageIsReady(worker);
-      
+
       // Wait up to 5s for token to appear (some pages take time)
       let token = null;
       for (let i = 0; i < 10; i++) {
@@ -218,13 +236,13 @@ async function ensurePageIsReady(page) {
     // We look for common elements like buttons or the search bar
     await page.waitForFunction(() => {
       const text = document.body.innerText;
-      const isChallenge = text.includes('Checking your browser') || 
-                         text.includes('Just a moment') ||
-                         !!document.querySelector('#challenge-running');
+      const isChallenge = text.includes('Checking your browser') ||
+        text.includes('Just a moment') ||
+        !!document.querySelector('#challenge-running');
       // If we see a button or a specific container, we are likely through
-      const isLoaded = !!document.querySelector('button') || 
-                       !!document.querySelector('input') || 
-                       !!document.querySelector('.search-button');
+      const isLoaded = !!document.querySelector('button') ||
+        !!document.querySelector('input') ||
+        !!document.querySelector('.search-button');
       return !isChallenge && isLoaded;
     }, { timeout: 30000, polling: 1000 });
   } catch (e) {
@@ -235,10 +253,10 @@ async function ensurePageIsReady(page) {
 const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
   // Use relative path if it starts with /api to let the browser handle domain/CORS
   // Otherwise use the full URL with the main domain as primary
-  const fullUrl = (path.startsWith('/api') || path.startsWith('http')) 
-    ? path 
+  const fullUrl = (path.startsWith('/api') || path.startsWith('http'))
+    ? path
     : `https://sindibad.iq/api/${path}`;
-  
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       // 1. Ensure Cloudflare has passed
@@ -255,11 +273,11 @@ const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
         } catch (e) { /* Access Denied */ }
 
         const headers = {
-          'Accept': 'application/json', 
+          'Accept': 'application/json',
           'accept-token': token,
-          'appversion': '1.254.0', 
+          'appversion': '1.254.0',
           'currencytype': 'IQD',
-          'device': 'web', 
+          'device': 'web',
           'language': 'ar',
           'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
           'Content-Type': 'application/json',
@@ -269,8 +287,8 @@ const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
           ...fetchOptions.headers
         };
         try {
-          const response = await fetch(url, { 
-            ...fetchOptions, 
+          const response = await fetch(url, {
+            ...fetchOptions,
             headers,
             mode: 'cors',
             credentials: 'omit'
@@ -287,14 +305,14 @@ const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
 
       if (!result.success) {
         console.warn(`[Cloudflare] Fetch failed (${result.status}) for ${fullUrl}: ${result.error}`);
-        
+
         if (result.status === 403) throw new Error('Cloudflare Blocked API (403)');
         if (result.status === 404) {
           // If relative path failed, try full URL with api subdomain
           if (fullUrl.startsWith('/api/')) {
-             const fallbackUrl = `https://api.sindibad.iq${fullUrl}`;
-             console.log(`[Cloudflare] 404 fallback (Relative -> Subdomain): trying ${fallbackUrl}`);
-             return await executeFetchInPage(page, fallbackUrl, options, 0);
+            const fallbackUrl = `https://api.sindibad.iq${fullUrl}`;
+            console.log(`[Cloudflare] 404 fallback (Relative -> Subdomain): trying ${fallbackUrl}`);
+            return await executeFetchInPage(page, fallbackUrl, options, 0);
           }
           // If main domain full URL failed, try api subdomain
           if (fullUrl.includes('https://sindibad.iq/api/')) {
@@ -308,16 +326,16 @@ const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
       }
       return result.data;
     } catch (e) {
-      const isContextDestroyed = e.message.includes('Execution context was destroyed') || 
-                                 e.message.includes('Browser API Error: 0') ||
-                                 e.message.includes('Navigation failed');
+      const isContextDestroyed = e.message.includes('Execution context was destroyed') ||
+        e.message.includes('Browser API Error: 0') ||
+        e.message.includes('Navigation failed');
 
       if (isContextDestroyed && attempt < retries) {
         console.warn(`[Cloudflare] Context destroyed or navigation occurred, waiting 3s to retry... (Attempt ${attempt + 1})`);
         await wait(3000);
         continue;
       }
-      
+
       console.error(`[Browser Fetch] Failed: ${e.message}`);
       throw e;
     }
@@ -391,7 +409,7 @@ async function safeEvaluate(page, fn, args = [], maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // Ensure the page is in a stable ready state before evaluating
-      await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 }).catch(() => {});
+      await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 }).catch(() => { });
       return await page.evaluate(fn, ...args);
     } catch (err) {
       const isContextDestroyed =
@@ -404,7 +422,7 @@ async function safeEvaluate(page, fn, args = [], maxRetries = 3) {
       if (isContextDestroyed && attempt < maxRetries) {
         console.warn(`[safeEvaluate] Context destroyed (attempt ${attempt}/${maxRetries}), waiting for page to settle...`);
         // Wait for any navigation to finish and a short pause
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => { });
         await wait(2000);
         continue;
       }
@@ -452,13 +470,13 @@ async function waitForUrlToStabilize(page, stableDuration = 3000, maxWait = 2000
  */
 async function scrapeHotelsFromDOM(page, params) {
   const { cityName, cityId, checkIn, checkOut, adultsCount } = params;
-  
+
   const fCheckIn = checkIn.split('T')[0];
   const fCheckOut = checkOut.split('T')[0];
-  
+
   const slug = `${cityName}-${cityId}`;
   const url = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}&step=plp&from=search`;
-  
+
   const MAX_OUTER_RETRIES = 2;
 
   for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
@@ -470,14 +488,14 @@ async function scrapeHotelsFromDOM(page, params) {
       // Listen for Sindibad's internal API call that fetches hotel data
       // ============================================================
       let interceptedHotels = null;
-      
+
       const responseHandler = async (response) => {
         const reqUrl = response.url();
         // Sindibad's SPA calls its own API for hotel search results
         // Common patterns: /hotel/search, /HotelSearch, /hotel-content, /hotels/search
         const isHotelAPI = reqUrl.includes('hotel') && reqUrl.includes('search') &&
-                           (reqUrl.includes('/api/') || reqUrl.includes('api.sindibad'));
-        
+          (reqUrl.includes('/api/') || reqUrl.includes('api.sindibad'));
+
         if (isHotelAPI && response.status() === 200) {
           try {
             const contentType = response.headers()['content-type'] || '';
@@ -485,11 +503,11 @@ async function scrapeHotelsFromDOM(page, params) {
               const json = await response.json();
               console.log(`[Intercept] ✅ Captured hotel API response from: ${reqUrl}`);
               console.log(`[Intercept] Response keys: ${Object.keys(json).join(', ')}`);
-              
+
               // Try to find the hotel list in the response
-              const hotelList = json.result || json.data || json.hotels || json.results || 
-                                json.result?.hotels || json.data?.hotels || [];
-              
+              const hotelList = json.result || json.data || json.hotels || json.results ||
+                json.result?.hotels || json.data?.hotels || [];
+
               if (Array.isArray(hotelList) && hotelList.length > 0) {
                 console.log(`[Intercept] Found ${hotelList.length} hotels in API response`);
                 interceptedHotels = hotelList;
@@ -510,9 +528,9 @@ async function scrapeHotelsFromDOM(page, params) {
           }
         }
       };
-      
+
       page.on('response', responseHandler);
-      
+
       // Also log ALL API requests for diagnostics
       const requestLogger = (request) => {
         const reqUrl = request.url();
@@ -521,13 +539,13 @@ async function scrapeHotelsFromDOM(page, params) {
         }
       };
       page.on('request', requestLogger);
-      
+
       // Navigate to the search page (this triggers Sindibad's internal API call)
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-      
+
       // Hard wait to give SPA time to settle
-      await wait(5000);
-      
+      await wait(7000);
+
       // Detect Cloudflare challenge page by title or content and wait for redirect
       const pageTitle = await page.title();
       if (pageTitle.includes('Just a moment') || pageTitle.includes('Cloudflare') || pageTitle.includes('Checking your browser')) {
@@ -539,17 +557,17 @@ async function scrapeHotelsFromDOM(page, params) {
       }
       // Wait for URL to stabilize
       await waitForUrlToStabilize(page, 3000, 15000);
-      
+
       // Wait for Cloudflare to clear
       await ensurePageIsReady(page);
-      
+
       // Ensure at least one hotel link is present before scraping
       await page.waitForSelector('a[href*="/hotel/"]', { visible: true, timeout: 30000 }).catch(() => console.warn('[Hotel Scraper] Hotel link selector not found within timeout'));
-      
+
       // Give the SPA extra time to make its API call and render
       console.log(`[Hotel Scraper] Waiting 10s for SPA to complete API calls...`);
       await wait(10000);
-      
+
       // Scroll to trigger any lazy loading
       await safeEvaluate(page, async () => {
         for (let i = 0; i < 8; i++) {
@@ -557,28 +575,28 @@ async function scrapeHotelsFromDOM(page, params) {
           await new Promise(r => setTimeout(r, 500));
         }
         window.scrollTo(0, 0);
-      }).catch(() => {});
-      
+      }).catch(() => { });
+
       // Wait a bit more after scrolling
       await wait(3000);
-      
+
       // Clean up listeners
       page.removeListener('response', responseHandler);
       page.removeListener('request', requestLogger);
-      
+
       // ============================================================
       // Check if we captured hotel data via network interception
       // ============================================================
       if (interceptedHotels && interceptedHotels.length > 0) {
         console.log(`[Hotel Scraper] ✅ Strategy 1 SUCCESS: ${interceptedHotels.length} hotels from network interception`);
-        
+
         // Normalize the intercepted data to our standard format
         const hotels = interceptedHotels.map((h, index) => {
           const name = h.title?.ar || h.title?.en || h.name || h.hotelName || `Hotel ${index + 1}`;
           const price = h.minPrice || h.price || h.startingPrice || h.min_price || 0;
-          const imgUrl = h.image || h.imageUrl || h.thumbnail || 
-                         (h.images && h.images[0]?.url) || (h.images && h.images[0]) || '';
-          
+          const imgUrl = h.image || h.imageUrl || h.thumbnail ||
+            (h.images && h.images[0]?.url) || (h.images && h.images[0]) || '';
+
           return {
             hotelId: h.id || h.hotelId || h.hotel_id || `api-${index}-${Date.now()}`,
             name: typeof name === 'string' ? name : (name?.ar || name?.en || `Hotel ${index + 1}`),
@@ -589,12 +607,12 @@ async function scrapeHotelsFromDOM(page, params) {
             location: h.address?.ar || h.address?.en || h.location || h.city || ''
           };
         }).filter(h => h.price > 0);
-        
+
         return hotels;
       }
-      
+
       console.warn(`[Hotel Scraper] Strategy 1 (Network Interception) did not capture data. Trying Strategy 2 (DOM)...`);
-      
+
       // ============================================================
       // STRATEGY 2: Aggressive DOM Scraping (Fallback)
       // Dump the page structure for debugging and try broader selectors
@@ -610,7 +628,7 @@ async function scrapeHotelsFromDOM(page, params) {
           allLinks: [],
           allImages: 0
         };
-        
+
         // Dump unique class names on the page (top-level containers)
         const allElements = document.querySelectorAll('div[class], section[class], a[class]');
         const classSet = new Set();
@@ -618,67 +636,67 @@ async function scrapeHotelsFromDOM(page, params) {
           el.classList.forEach(cls => classSet.add(cls));
         });
         diag.classesFound = Array.from(classSet).slice(0, 80);
-        
+
         // Find ALL links on the page
         document.querySelectorAll('a[href]').forEach(a => {
           if (a.href.includes('hotel')) {
             diag.allLinks.push(a.href);
           }
         });
-        
+
         // Count images
         diag.allImages = document.querySelectorAll('img').length;
-        
+
         // Strategy 2A: Try broader selectors for hotel cards
         // Look for ANY element containing price text (IQD / د.ع)
         const allDivs = Array.from(document.querySelectorAll('div, a, article, li, section'));
         const priceContainers = allDivs.filter(el => {
           const text = el.innerText || '';
-          return (text.includes('د.ع') || text.includes('IQD')) && 
-                 text.length < 2000 && text.length > 30;
+          return (text.includes('د.ع') || text.includes('IQD')) &&
+            text.length < 2000 && text.length > 30;
         });
-        
+
         console.log(`[DOM Fallback] Found ${priceContainers.length} elements containing price text`);
-        
+
         // Among price containers, try to extract hotel data
         const seen = new Set();
         priceContainers.forEach((container, index) => {
           try {
             const text = container.innerText;
-            
+
             // Skip if this is the filter/sidebar section
             if (text.includes('نجوم الفندق') && text.includes('تقييم النزلاء')) return;
-            
+
             // Extract name (first line or heading)
             const heading = container.querySelector('h1, h2, h3, h4, h5, h6, [class*="title"], [class*="name"]');
             const name = heading?.innerText?.trim() || text.split('\n').find(l => l.trim().length > 3 && !l.includes('د.ع'))?.trim();
-            
+
             if (!name || seen.has(name)) return;
-            
+
             // Extract price
             const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD)/) || text.match(/(د\.ع|IQD)\s*([\d,]+)/);
             const priceValue = priceMatch ? (priceMatch[1] || priceMatch[2]) : null;
             const price = priceValue ? parseInt(priceValue.replace(/,/g, ''), 10) : 0;
-            
+
             if (price <= 0) return;
-            
+
             // Extract image
-            let img = container.querySelector('img')?.src || 
-                      container.parentElement?.querySelector('img')?.src || '';
+            let img = container.querySelector('img')?.src ||
+              container.parentElement?.querySelector('img')?.src || '';
             if (img.includes('data:image') || img.includes('icon') || img.includes('svg')) img = '';
-            
+
             // Extract link
             const link = container.closest('a')?.href || container.querySelector('a')?.href || '';
             const hotelId = link ? link.split('/').pop() : `dom-${index}-${Date.now()}`;
-            
+
             // Extract star rating
             const starEls = container.querySelectorAll('svg[class*="yellow"], svg[class*="star"], [class*="star"]');
             const stars = starEls.length || 4;
-            
+
             // Extract rating number
             const ratingMatch = text.match(/(\d\.?\d?)\s*\/\s*10/) || text.match(/(\d\.?\d?)\s*\/\s*5/);
             const rating = ratingMatch ? parseFloat(ratingMatch[1]) : 8.5;
-            
+
             seen.add(name);
             diag.hotels.push({
               hotelId,
@@ -690,10 +708,10 @@ async function scrapeHotelsFromDOM(page, params) {
             });
           } catch (e) { /* skip */ }
         });
-        
+
         return diag;
       });
-      
+
       // Log diagnostics
       console.log(`[DOM Fallback] URL: ${domResult.url}`);
       console.log(`[DOM Fallback] Title: ${domResult.title}`);
@@ -703,22 +721,22 @@ async function scrapeHotelsFromDOM(page, params) {
       console.log(`[DOM Fallback] Hotel links found: ${domResult.allLinks?.slice(0, 10).join(', ')}`);
       console.log(`[DOM Fallback] Images on page: ${domResult.allImages}`);
       console.log(`[DOM Fallback] Hotels extracted: ${domResult.hotels?.length || 0}`);
-      
+
       if (domResult.hotels && domResult.hotels.length > 0) {
         console.log(`[Hotel Scraper] ✅ Strategy 2 SUCCESS: ${domResult.hotels.length} hotels from DOM fallback`);
         return domResult.hotels;
       }
-      
+
       // ============================================================
       // STRATEGY 3: Direct API call from within the browser context
       // Since the page has passed Cloudflare, we can make fetch() calls
       // from within it, inheriting all cookies/tokens
       // ============================================================
       console.warn(`[Hotel Scraper] Strategy 2 (DOM) also returned 0 hotels. Trying Strategy 3 (in-page fetch)...`);
-      
+
       const apiHotels = await safeEvaluate(page, async (searchParams) => {
         const { cityId, fCheckIn, fCheckOut, adultsCount } = searchParams;
-        
+
         // Try multiple known Sindibad API endpoints
         const endpoints = [
           {
@@ -726,7 +744,7 @@ async function scrapeHotelsFromDOM(page, params) {
             body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
           },
           {
-            url: '/api/v1/hotel-content/HotelSearch/search', 
+            url: '/api/v1/hotel-content/HotelSearch/search',
             body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
           },
           {
@@ -734,13 +752,13 @@ async function scrapeHotelsFromDOM(page, params) {
             body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
           }
         ];
-        
+
         for (const ep of endpoints) {
           try {
             console.log(`[Strategy 3] Trying: ${ep.url}`);
             const token = localStorage.getItem('token') ||
               JSON.parse(localStorage.getItem('auth') || '{}')?.token || '';
-            
+
             const resp = await fetch(ep.url, {
               method: 'POST',
               headers: {
@@ -754,24 +772,24 @@ async function scrapeHotelsFromDOM(page, params) {
               },
               body: JSON.stringify(ep.body)
             });
-            
+
             if (!resp.ok) {
               console.log(`[Strategy 3] ${ep.url} returned ${resp.status}`);
               continue;
             }
-            
+
             const json = await resp.json();
             console.log(`[Strategy 3] Response keys: ${Object.keys(json).join(', ')}`);
-            
+
             const hotelList = json.result || json.data || json.hotels || [];
-            const hotels = Array.isArray(hotelList) ? hotelList : 
-                          (hotelList.hotels || hotelList.items || Object.values(hotelList).find(v => Array.isArray(v)) || []);
-            
+            const hotels = Array.isArray(hotelList) ? hotelList :
+              (hotelList.hotels || hotelList.items || Object.values(hotelList).find(v => Array.isArray(v)) || []);
+
             if (hotels.length > 0) {
               console.log(`[Strategy 3] ✅ Found ${hotels.length} hotels via ${ep.url}`);
               return hotels.map((h, i) => ({
                 hotelId: h.id || h.hotelId || `api3-${i}`,
-                name: h.title?.ar || h.title?.en || h.name || h.hotelName || `Hotel ${i+1}`,
+                name: h.title?.ar || h.title?.en || h.name || h.hotelName || `Hotel ${i + 1}`,
                 price: h.minPrice || h.price || h.startingPrice || 0,
                 image: h.image || h.imageUrl || (h.images?.[0]?.url) || (h.images?.[0]) || '',
                 stars: h.star || h.stars || 4,
@@ -783,23 +801,23 @@ async function scrapeHotelsFromDOM(page, params) {
             console.log(`[Strategy 3] Error on ${ep.url}: ${e.message}`);
           }
         }
-        
+
         return [];
       }, [{ cityId, fCheckIn, fCheckOut, adultsCount }]);
-      
+
       if (apiHotels && apiHotels.length > 0) {
         console.log(`[Hotel Scraper] ✅ Strategy 3 SUCCESS: ${apiHotels.length} hotels from in-page fetch`);
         return apiHotels;
       }
-      
+
       console.error(`[Hotel Scraper] All 3 strategies returned 0 hotels on attempt ${outerAttempt}`);
-      
+
       if (outerAttempt < MAX_OUTER_RETRIES) {
         console.log(`[Hotel Scraper] Retrying in 5s...`);
         await wait(5000);
         continue;
       }
-      
+
       // Log a snippet of the page innerText for debugging when no hotels are extracted
       const innerSnippet = await page.evaluate(() => document.body.innerText.slice(0, 500));
       console.log(`[Debug] Page innerText first 500 chars:\n${innerSnippet}`);
@@ -811,7 +829,7 @@ async function scrapeHotelsFromDOM(page, params) {
         console.log(`[Debug] Saved page HTML to ${debugPath}`);
       } catch (dumpErr) { console.error('[Debug] Failed to write HTML dump:', dumpErr.message); }
       return [];
-      
+
     } catch (error) {
       const isContextError =
         error.message.includes('Execution context was destroyed') ||
@@ -878,7 +896,7 @@ app.post('/api/scrape-hotels', async (req, res) => {
     }
 
     console.log(`[Strategy] Switching to Full DOM Scraping for ${cityName}...`);
-    
+
     const hotels = await browserManager.exec(async (page) => {
       return await scrapeHotelsFromDOM(page, {
         cityName,
@@ -897,10 +915,10 @@ app.post('/api/scrape-hotels', async (req, res) => {
     // Update Caches
     SMART_CACHE.set('hotels', cacheKey, hotels);
     try {
-      await supabase.from('search_cache').upsert({ 
-        key: cacheKey, 
-        data: hotels, 
-        created_at: new Date() 
+      await supabase.from('search_cache').upsert({
+        key: cacheKey,
+        data: hotels,
+        created_at: new Date()
       }, { onConflict: 'key' });
     } catch (e) { console.warn('[Supabase] Cache update failed:', e.message); }
 
@@ -979,10 +997,10 @@ app.post('/api/hotel-details', async (req, res) => {
  */
 async function scrapeFlightsFromDOM(page, params) {
   const { origin, destination, date } = params;
-  
+
   // Construct search URL
   const url = `https://sindibad.iq/flights/${origin}-${destination}?departing=${date}&adult=1&child=0&infant=0&cabinType=Economy&flightType=OneWay&step=results`;
-  
+
   const MAX_OUTER_RETRIES = 3;
 
   for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
@@ -1040,12 +1058,12 @@ async function scrapeFlightsFromDOM(page, params) {
         cards.forEach((card, index) => {
           try {
             const text = card.innerText;
-            
+
             // Extract Times (HH:mm)
             const times = text.match(/\d{2}:\d{2}/g);
             const depTime = times?.[0] || "--:--";
             const arrTime = times?.[1] || "--:--";
-            
+
             // Extract Price
             const priceMatch = text.match(/([\d,]+)\s*د\.ع/) || text.match(/([\d,]+)\s*IQD/);
             const priceStr = priceMatch ? priceMatch[1] : "0";
@@ -1076,7 +1094,7 @@ async function scrapeFlightsFromDOM(page, params) {
                 destination: "" // Will be filled from params
               });
             }
-          } catch (e) {}
+          } catch (e) { }
         });
         return results;
       });
@@ -1106,7 +1124,7 @@ async function scrapeFlightsFromDOM(page, params) {
 app.post('/api/scrape-flights', async (req, res) => {
   const { origin, destination, date } = req.body;
   const cacheKey = `flights-dom-${origin}-${destination}-${date}`;
-  
+
   const cached = SMART_CACHE.get('flights', cacheKey);
   if (cached && cached.length > 0) {
     console.log(`[Cache] Serving ${cached.length} flights from memory.`);
@@ -1114,7 +1132,7 @@ app.post('/api/scrape-flights', async (req, res) => {
   }
 
   console.log(`[Strategy] Switching to Flight DOM Scraping for ${origin} -> ${destination}...`);
-  
+
   try {
     const flights = await browserManager.exec(async (page) => {
       return await scrapeFlightsFromDOM(page, { origin, destination, date });
@@ -1123,7 +1141,7 @@ app.post('/api/scrape-flights', async (req, res) => {
     if (flights.length > 0) {
       SMART_CACHE.set('flights', cacheKey, flights);
     }
-    
+
     return res.json({ success: true, data: flights });
   } catch (e) {
     console.error(`[Flight Endpoint] Final Error: ${e.message}`);

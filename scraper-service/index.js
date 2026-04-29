@@ -80,6 +80,10 @@ class BrowserManager {
 
         // 🛡️ Stealth: Set realistic User-Agent to override headless defaults
         await p.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        
+        // 🛡️ Explicitly enable JavaScript
+        await p.setJavaScriptEnabled(true);
+
         // 🛡️ Spoof navigator properties to evade detection
         await p.evaluateOnNewDocument(() => {
           Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -90,7 +94,7 @@ class BrowserManager {
 
         // 🛡️ Stealth: Set extra headers to mimic a real desktop browser
         await p.setExtraHTTPHeaders({
-          'Accept-Language': 'ar-IQ,ar;q=0.9,en-US;q=0.9,en;q=0.8',
+          'Accept-Language': 'ar-IQ,ar;q=0.9,en-US;q=0.8,en;q=0.7',
           'Sec-CH-UA': '"Google Chrome";v="124", "Not:A-Brand";v="8", "Chromium";v="124"',
           'Sec-CH-UA-Mobile': '?0',
           'Sec-CH-UA-Platform': '"Windows"',
@@ -99,14 +103,28 @@ class BrowserManager {
         await p.setRequestInterception(true);
         p.on('request', r => {
           const url = r.url();
-          const whitelist = /sindibad\.iq|cdn\.sindibad\.iq/;
-          const blacklist = /(google-analytics\.com|googletagmanager\.com|facebook\.net|fbcdn\.net|adservice\.google\.com|hotjar\.com)/;
+          const whitelist = /sindibad\.iq|cdn\.sindibad\.iq|assets\.sindibad\.iq/;
+          const blacklist = /(google-analytics\.com|googletagmanager\.com|facebook\.net|fbcdn\.net|adservice\.google\.com|hotjar\.com|clarity\.ms)/;
+          
           if (!whitelist.test(url) && blacklist.test(url)) {
             return r.abort();
           }
-          if (['image', 'font', 'media', 'stylesheet'].includes(r.resourceType())) {
-            return r.abort();
+
+          // TROJAN HORSE: Inject custom headers for all Sindibad requests
+          if (url.includes('sindibad.iq')) {
+            const headers = {
+              ...r.headers(),
+              'Referer': p.url() || 'https://sindibad.iq/',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            };
+            return r.continue({ headers });
           }
+
+          if (['image', 'font', 'media', 'stylesheet'].includes(r.resourceType())) {
+            // Only abort if it's NOT a sindibad asset
+            if (!whitelist.test(url)) return r.abort();
+          }
+          
           return r.continue();
         });
         // Use networkidle2 to ensure Cloudflare challenges have a chance to settle
@@ -543,8 +561,8 @@ async function scrapeHotelsFromDOM(page, params) {
       // Navigate to the search page (this triggers Sindibad's internal API call)
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
-      // Hard wait to give SPA time to settle
-      await wait(7000);
+      // Hard wait to give SPA time to settle (Ultra Stealth v2.0 - 15s)
+      await wait(15000);
 
       // Detect Cloudflare challenge page by title or content and wait for redirect
       const pageTitle = await page.title();
@@ -580,9 +598,9 @@ async function scrapeHotelsFromDOM(page, params) {
       // Wait a bit more after scrolling
       await wait(3000);
 
-      // Clean up listeners
-      page.removeListener('response', responseHandler);
-      page.removeListener('request', requestLogger);
+      // Clean up listeners using .off() to avoid "removeListener is not a function" crash
+      page.off('response', responseHandler);
+      page.off('request', requestLogger);
 
       // ============================================================
       // Check if we captured hotel data via network interception

@@ -274,7 +274,9 @@ const HotelList = () => {
                    </div>
                    <div className="space-y-2">
                      <h3 className="text-xl font-black">عذراً، حدث خطأ ما</h3>
-                     <p className="text-sm font-bold text-muted-foreground">{error}</p>
+                     <p className="text-sm font-bold text-muted-foreground">
+                       {typeof error === 'string' ? error : 'حدث خطأ في النظام. يرجى المحاولة لاحقاً.'}
+                     </p>
                    </div>
                    <Button onClick={fetchHotels} variant="outline" className="rounded-2xl px-8 h-12 font-black">إعادة المحاولة</Button>
                 </div>

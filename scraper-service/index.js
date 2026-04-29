@@ -502,108 +502,77 @@ async function scrapeHotelsFromDOM(page, params) {
 
     try {
       // ============================================================
-      // STRATEGY 1: Network Response Interception
-      // Listen for Sindibad's internal API call that fetches hotel data
+      // STRATEGY 1: Network Response Interception (Optimized v2.1)
       // ============================================================
+      let resolveInterception;
+      const interceptionPromise = new Promise(resolve => { resolveInterception = resolve; });
       let interceptedHotels = null;
 
       const responseHandler = async (response) => {
-        const reqUrl = response.url();
-        // Sindibad's SPA calls its own API for hotel search results
-        // Common patterns: /hotel/search, /HotelSearch, /hotel-content, /hotels/search
-        const isHotelAPI = reqUrl.includes('hotel') && reqUrl.includes('search') &&
-          (reqUrl.includes('/api/') || reqUrl.includes('api.sindibad'));
-
-        if (isHotelAPI && response.status() === 200) {
-          try {
+        try {
+          const reqUrl = response.url();
+          const isHotelAPI = (reqUrl.includes('hotel') && reqUrl.includes('search')) || reqUrl.includes('poll-results');
+          
+          if (isHotelAPI && response.status() === 200) {
             const contentType = response.headers()['content-type'] || '';
             if (contentType.includes('json')) {
               const json = await response.json();
-              console.log(`[Intercept] ✅ Captured hotel API response from: ${reqUrl}`);
-              console.log(`[Intercept] Response keys: ${Object.keys(json).join(', ')}`);
+              
+              // Extract hotel list from various possible structures
+              const hotelList = json.result?.hotels || json.data?.hotels || json.result || json.data || json.hotels || [];
+              const finalHotels = Array.isArray(hotelList) ? hotelList : (Object.values(hotelList).find(v => Array.isArray(v)) || []);
 
-              // Try to find the hotel list in the response
-              const hotelList = json.result || json.data || json.hotels || json.results ||
-                json.result?.hotels || json.data?.hotels || [];
-
-              if (Array.isArray(hotelList) && hotelList.length > 0) {
-                console.log(`[Intercept] Found ${hotelList.length} hotels in API response`);
-                interceptedHotels = hotelList;
-              } else if (json.result && typeof json.result === 'object') {
-                // Maybe result is an object with a nested array
-                const nestedArrays = Object.values(json.result).filter(v => Array.isArray(v));
-                for (const arr of nestedArrays) {
-                  if (arr.length > 0 && (arr[0].title || arr[0].name || arr[0].hotelName)) {
-                    console.log(`[Intercept] Found ${arr.length} hotels in nested result`);
-                    interceptedHotels = arr;
-                    break;
-                  }
-                }
+              if (finalHotels.length > 0) {
+                console.log(`[Intercept] ✅ Strategy 1 SUCCESS (Fast Exit) from: ${reqUrl.split('?')[0]}`);
+                interceptedHotels = finalHotels;
+                resolveInterception(finalHotels);
               }
             }
-          } catch (e) {
-            // JSON parse might fail on non-JSON responses matching the URL pattern
           }
-        }
+        } catch (e) { /* silent fail for individual responses */ }
       };
 
       page.on('response', responseHandler);
 
-      // Also log ALL API requests for diagnostics
+      // Also log API requests for diagnostics
       const requestLogger = (request) => {
         const reqUrl = request.url();
-        if (reqUrl.includes('api') && reqUrl.includes('hotel')) {
-          console.log(`[Intercept] 📡 Hotel API request: ${request.method()} ${reqUrl}`);
+        if (reqUrl.includes('api') && (reqUrl.includes('hotel') || reqUrl.includes('poll'))) {
+          console.log(`[Intercept] 📡 Active API request: ${request.method()} ${reqUrl.split('?')[0]}`);
         }
       };
       page.on('request', requestLogger);
 
-      // Navigate to the search page (this triggers Sindibad's internal API call)
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+      // 1. Navigate to the search page
+      console.log(`[Hotel Scraper] Navigating to Sindibad...`);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-      // Hard wait to give SPA time to settle (Ultra Stealth v2.0 - 15s)
-      await wait(15000);
+      // 2. Wait for either Interception SUCCESS or a short Settle Timeout
+      // We wait up to 10 seconds for interception, but proceed to DOM after 3s if nothing caught
+      const fastExit = await Promise.race([
+        interceptionPromise,
+        wait(8000).then(() => null) // Max 8s wait for interception before fallback
+      ]);
 
-      // Detect Cloudflare challenge page by title or content and wait for redirect
-      const pageTitle = await page.title();
-      if (pageTitle.includes('Just a moment') || pageTitle.includes('Cloudflare') || pageTitle.includes('Checking your browser')) {
-        console.warn('[Cloudflare] Challenge page detected, waiting up to 30s for redirect...');
-        await page.waitForFunction(() => {
-          const txt = document.body.innerText;
-          return !(txt.includes('Just a moment') || txt.includes('Checking your browser') || txt.includes('Cloudflare'));
-        }, { timeout: 30000, polling: 1000 }).catch(e => console.warn(`[Cloudflare] Wait timeout: ${e.message}`));
-      }
-      // Wait for URL to stabilize
-      await waitForUrlToStabilize(page, 3000, 15000);
-
-      // Wait for Cloudflare to clear
-      await ensurePageIsReady(page);
-
-      // Ensure at least one hotel link is present before scraping
-      await page.waitForSelector('a[href*="/hotel/"]', { visible: true, timeout: 30000 }).catch(() => console.warn('[Hotel Scraper] Hotel link selector not found within timeout'));
-
-      // Give the SPA extra time to make its API call and render
-      console.log(`[Hotel Scraper] Waiting 10s for SPA to complete API calls...`);
-      await wait(10000);
-
-      // Scroll to trigger any lazy loading
-      await safeEvaluate(page, async () => {
-        for (let i = 0; i < 8; i++) {
-          window.scrollBy(0, 600);
+      if (!fastExit) {
+        console.log(`[Hotel Scraper] No early interception, proceeding with SPA settle and DOM fallback...`);
+        await wait(3000); // Minimal settle time for SPA hydration
+        await ensurePageIsReady(page);
+        
+        // Scroll to trigger any lazy loading as last resort
+        await safeEvaluate(page, async () => {
+          window.scrollBy(0, 1000);
           await new Promise(r => setTimeout(r, 500));
-        }
-        window.scrollTo(0, 0);
-      }).catch(() => { });
+          window.scrollTo(0, 0);
+        }).catch(() => { });
+      }
 
-      // Wait a bit more after scrolling
-      await wait(3000);
-
-      // Clean up listeners using .off() to avoid "removeListener is not a function" crash
+      // Clean up listeners immediately
       page.off('response', responseHandler);
       page.off('request', requestLogger);
 
       // ============================================================
-      // Check if we captured hotel data via network interception
+      // Result Processing
       // ============================================================
       if (interceptedHotels && interceptedHotels.length > 0) {
         console.log(`[Hotel Scraper] ✅ Strategy 1 SUCCESS: ${interceptedHotels.length} hotels from network interception`);

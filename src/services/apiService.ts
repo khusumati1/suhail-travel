@@ -69,7 +69,9 @@ class ApiService {
         return {
           success: false,
           data: [],
-          errorMessage: body.message || 'Failed to fetch hotel data from the server.'
+          errorMessage: typeof body.message === 'object' 
+            ? JSON.stringify(body.message) 
+            : (body.message || 'Failed to fetch hotel data from the server.')
         };
       }
 
@@ -96,7 +98,9 @@ class ApiService {
       return {
         success: false,
         data: [],
-        errorMessage: serverMessage
+        errorMessage: typeof serverMessage === 'object' 
+          ? JSON.stringify(serverMessage) 
+          : serverMessage
       };
     }
   }

@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Calendar, PackageSearch, Frown, Plane, UserPlus, Clock, MapPin, CalendarDays, Star, CheckCircle2, XCircle } from "lucide-react";
+import { Calendar, PackageSearch, Frown, Plane, UserPlus, Clock, MapPin, CalendarDays, Star, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import BottomNav from "@/components/BottomNav";
 import AuthModal from "@/components/AuthModal";
 import { useAuthGate } from "@/hooks/useAuthGate";
 import { useIsMobile } from "@/hooks/use-mobile";
 import DesktopPageLayout from "@/components/DesktopPageLayout";
+import { getPlaceholder } from "@/utils/imagePlaceholder";
+import { apiService } from "@/services/apiService";
 
 const tabs = ["القادمة", "المكتملة", "الملغاة"];
 
@@ -25,60 +27,83 @@ const sampleBookings = {
 
 const BookingsScreen = () => {
   const [activeTab, setActiveTab] = useState(0);
+  const [realBookings, setRealBookings] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { showAuth, requireAuth, closeAuth } = useAuthGate();
   const isMobile = useIsMobile();
 
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const res = await apiService.getBookings();
+        if (res.success) {
+          setRealBookings(res.data);
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
+
   if (isMobile === undefined) return null;
 
-  const currentBookings = activeTab === 0 ? sampleBookings.upcoming : activeTab === 1 ? sampleBookings.completed : sampleBookings.cancelled;
+  // Simple filtering (can be improved later with real status logic)
+  const upcoming = realBookings.filter(b => b.status !== "مكتمل" && b.status !== "ملغي");
+  const completed = realBookings.filter(b => b.status === "مكتمل");
+  const cancelled = realBookings.filter(b => b.status === "ملغي");
+
+  const currentBookings = activeTab === 0 ? upcoming : activeTab === 1 ? completed : cancelled;
 
   const statusColor = (status: string) => {
-    if (status === "مؤكد" || status === "مكتمل") return "text-success bg-success/10";
-    if (status === "ملغي") return "text-destructive bg-destructive/10";
-    return "text-accent-foreground bg-accent/10";
+    if (status === "مؤكد" || status === "مكتمل") return "text-green-600 bg-green-50";
+    if (status === "ملغي") return "text-red-600 bg-red-50";
+    return "text-blue-600 bg-blue-50";
   };
 
-  const BookingCard = ({ booking, i }: { booking: typeof sampleBookings.upcoming[0]; i: number }) => (
+  const BookingCard = ({ booking, i }: { booking: any; i: number }) => (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: i * 0.08 }}
-      className="bg-card rounded-2xl p-5 lg:p-6 shadow-card border border-border/50 hover:border-primary/20 hover:shadow-card-hover transition-all duration-300 cursor-pointer group"
+      className="bg-card rounded-[32px] p-6 shadow-sm border border-border/40 hover:border-primary/20 hover:shadow-xl transition-all duration-300 cursor-pointer group"
     >
       <div className="flex items-start justify-between mb-4">
-        <div>
-          <h3 className="font-bold text-foreground group-hover:text-primary transition-colors">{booking.title}</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">{booking.airline} · {booking.code}</p>
+        <div className="space-y-1">
+          <h3 className="font-black text-foreground text-lg group-hover:text-primary transition-colors">{booking.title}</h3>
+          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">{booking.airline} · {booking.code}</p>
         </div>
-        <span className={`text-[11px] font-bold px-3 py-1 rounded-full ${statusColor(booking.status)}`}>
+        <span className={`text-[10px] font-black px-4 py-1.5 rounded-xl ${statusColor(booking.status)}`}>
           {booking.status}
         </span>
       </div>
-      <div className="flex items-center justify-between pt-3 border-t border-border/50">
-        <div className="flex items-center gap-1.5 text-muted-foreground">
-          <CalendarDays className="w-3.5 h-3.5" />
-          <span className="text-xs">{booking.date}</span>
+      <div className="flex items-center justify-between pt-4 border-t border-border/40">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <CalendarDays className="w-4 h-4 text-primary" />
+          <span className="text-xs font-bold">{booking.date}</span>
         </div>
-        <p className="text-lg font-bold text-primary">{booking.price}</p>
+        <p className="text-xl font-black text-primary">{booking.price}</p>
       </div>
     </motion.div>
   );
 
   const TabBar = () => (
-    <div className="flex gap-1 bg-secondary rounded-2xl p-1">
+    <div className="flex gap-2 bg-secondary/50 rounded-2xl p-1.5">
       {tabs.map((tab, i) => (
         <button
           key={tab}
           onClick={() => setActiveTab(i)}
-          className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all duration-200 relative ${
-            activeTab === i ? "text-primary" : "text-muted-foreground"
-          }`}
+          className={`flex-1 py-3 rounded-xl text-xs font-black transition-all duration-200 relative ${activeTab === i ? "text-primary" : "text-muted-foreground"
+            }`}
         >
           {activeTab === i && (
             <motion.div
               layoutId="bookingTab"
-              className="absolute inset-0 bg-card rounded-xl shadow-card border border-border/50"
+              className="absolute inset-0 bg-white rounded-xl shadow-sm border border-border/20"
               transition={{ type: "spring", stiffness: 400, damping: 30 }}
             />
           )}
@@ -89,39 +114,49 @@ const BookingsScreen = () => {
   );
 
   const EmptyState = () => (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-center py-16">
-      <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center mb-5 border border-primary/20">
-        <PackageSearch className="w-10 h-10 text-primary/40" strokeWidth={1.5} />
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-center py-20 bg-white rounded-[40px] border border-dashed border-border/80 mt-8">
+      <div className="w-24 h-24 rounded-full bg-primary/5 flex items-center justify-center mb-6">
+        <PackageSearch className="w-10 h-10 text-primary/20" strokeWidth={1.5} />
       </div>
-      <h3 className="font-bold text-foreground text-lg">لا توجد حجوزات {tabs[activeTab]}</h3>
-      <p className="text-sm text-muted-foreground mt-1.5 text-center max-w-[250px]">
-        ابدأ بحجز رحلتك القادمة واستمتع بتجربة سفر مميزة
+      <h3 className="font-black text-foreground text-xl">لا توجد حجوزات {tabs[activeTab]}</h3>
+      <p className="text-sm font-bold text-muted-foreground mt-2 text-center max-w-[280px]">
+        ابدأ بحجز رحلتك القادمة الآن لتظهر هنا
       </p>
       <button
-        onClick={() => navigate("/flights")}
-        className="flex items-center gap-2 bg-primary text-primary-foreground rounded-2xl px-8 py-3 mt-6 font-bold text-sm hover:opacity-90 transition-opacity"
+        onClick={() => navigate("/")}
+        className="flex items-center gap-3 bg-primary text-white rounded-2xl px-10 py-4 mt-8 font-black text-sm shadow-xl shadow-primary/20 hover:scale-105 transition-all"
       >
-        <Plane className="w-4 h-4" strokeWidth={2} />
-        ابحث عن رحلة
+        <Plane className="w-4 h-4" />
+        استكشف الفنادق والرحلات
       </button>
     </motion.div>
   );
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#F8F9FA] flex items-center justify-center">
+         <div className="flex flex-col items-center gap-4">
+            <Loader2 className="w-10 h-10 text-primary animate-spin" />
+            <p className="text-sm font-black text-muted-foreground">جاري جلب حجوزاتك...</p>
+         </div>
+      </div>
+    );
+  }
 
   // Desktop layout
   if (!isMobile) {
     return (
       <DesktopPageLayout
         title="حجوزاتي"
-        subtitle="إدارة ومتابعة جميع حجوزاتك"
-        heroImage="https://images.unsplash.com/photo-1436491865332-7a61a109db05?w=1400&h=300&fit=crop"
+        subtitle="إدارة ومتابعة جميع حجوزاتك الحقيقية"
+        heroImage={getPlaceholder(1400, 300)}
       >
-        <div className="max-w-4xl mx-auto">
-          {/* Stats */}
-          <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className="max-w-5xl mx-auto px-4">
+          <div className="grid grid-cols-3 gap-6 mb-12">
             {[
-              { label: "حجوزات قادمة", value: String(sampleBookings.upcoming.length), icon: CalendarDays, color: "text-primary" },
-              { label: "مكتملة", value: String(sampleBookings.completed.length), icon: CheckCircle2, color: "text-success" },
-              { label: "ملغاة", value: String(sampleBookings.cancelled.length), icon: XCircle, color: "text-destructive" },
+              { label: "حجوزات قادمة", value: String(upcoming.length), icon: CalendarDays, color: "text-primary", bg: "bg-primary/5" },
+              { label: "مكتملة", value: String(completed.length), icon: CheckCircle2, color: "text-green-600", bg: "bg-green-50" },
+              { label: "ملغاة", value: String(cancelled.length), icon: XCircle, color: "text-red-600", bg: "bg-red-50" },
             ].map((stat) => {
               const Icon = stat.icon;
               return (
@@ -129,24 +164,22 @@ const BookingsScreen = () => {
                   key={stat.label}
                   initial={{ opacity: 0, y: 16 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="bg-card rounded-2xl p-5 text-center border border-border/50 shadow-card"
+                  className={`${stat.bg} rounded-[32px] p-8 text-center border border-white/50 shadow-sm`}
                 >
-                  <Icon className={`w-6 h-6 ${stat.color} mx-auto mb-2`} strokeWidth={1.8} />
-                  <p className="text-2xl font-bold text-foreground">{stat.value}</p>
-                  <p className="text-xs text-muted-foreground mt-1">{stat.label}</p>
+                  <Icon className={`w-8 h-8 ${stat.color} mx-auto mb-4`} strokeWidth={2} />
+                  <p className="text-4xl font-black text-foreground">{stat.value}</p>
+                  <p className="text-xs font-black text-muted-foreground uppercase tracking-widest mt-2">{stat.label}</p>
                 </motion.div>
               );
             })}
           </div>
 
-          {/* Tabs */}
-          <div className="max-w-md mx-auto mb-8">
+          <div className="max-w-md mx-auto mb-10">
             <TabBar />
           </div>
 
-          {/* Bookings List */}
           {currentBookings.length > 0 ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {currentBookings.map((booking, i) => (
                 <BookingCard key={booking.id} booking={booking} i={i} />
               ))}
@@ -162,36 +195,21 @@ const BookingsScreen = () => {
 
   // Mobile layout
   return (
-    <div className="mobile-container bg-background pb-24">
-      <div className="px-5 pt-14 pb-2">
-        <h1 className="text-foreground font-bold text-lg text-center mb-5">حجوزاتي</h1>
+    <div className="min-h-screen bg-[#F8F9FA] pb-32" dir="rtl">
+      <div className="px-6 pt-16 pb-8 bg-white border-b border-border/40">
+        <h1 className="text-2xl font-black text-foreground text-center mb-8">حجوزاتي</h1>
         <TabBar />
       </div>
 
-      <div className="px-5 mt-5">
+      <div className="px-6 mt-8">
         {currentBookings.length > 0 ? (
-          <div className="space-y-3">
+          <div className="space-y-4">
             {currentBookings.map((booking, i) => (
               <BookingCard key={booking.id} booking={booking} i={i} />
             ))}
           </div>
         ) : (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-center py-16">
-            <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center mb-5 border border-primary/20">
-              <UserPlus className="w-10 h-10 text-primary/40" strokeWidth={1.5} />
-            </div>
-            <h3 className="font-bold text-foreground text-lg">سجل دخولك لعرض حجوزاتك</h3>
-            <p className="text-sm text-muted-foreground mt-1.5 text-center max-w-[250px]">
-              يمكنك متابعة وإدارة حجوزاتك بعد تسجيل الدخول
-            </p>
-            <button
-              onClick={() => requireAuth()}
-              className="flex items-center gap-2 bg-primary text-primary-foreground rounded-2xl px-8 py-3 mt-6 font-bold text-sm active:scale-[0.97] transition-transform"
-            >
-              <UserPlus className="w-4 h-4" strokeWidth={2} />
-              تسجيل الدخول
-            </button>
-          </motion.div>
+          <EmptyState />
         )}
       </div>
 

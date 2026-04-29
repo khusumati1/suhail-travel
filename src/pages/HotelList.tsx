@@ -1,343 +1,358 @@
-import { useNavigate, useLocation } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  ArrowRight, 
+  MapPin, 
+  Filter, 
+  Search, 
+  Building2, 
+  Loader2, 
+  Pencil,
+  ArrowUpDown,
+  ChevronDown,
+  LayoutGrid
+} from 'lucide-react';
+import { apiService } from '@/services/apiService';
+import HotelCard from '@/components/HotelCard';
+import FilterSidebar from '@/components/FilterSidebar';
+import BottomNav from '@/components/BottomNav';
+import { HotelOffer } from '@/types';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
-  ArrowRight, Star, MapPin, Search,
-  Loader2, Building2, Check, ArrowUpDown, ChevronLeft, ChevronRight, ImageIcon
-} from "lucide-react";
-import BottomNav from "@/components/BottomNav";
-import DesktopPageLayout from "@/components/DesktopPageLayout";
-import { useIsMobile } from "@/hooks/use-mobile";
-import { useHotelSearch, HotelResult, HotelRegion } from "@/hooks/useHotelSearch";
-import { useState, useEffect, useCallback } from "react";
-import HotelSearchModule from "@/components/HotelSearchModule";
-import OptimizedImage from "@/components/OptimizedImage";
-import { useHotelImages } from "@/hooks/useHotelImages";
-import useEmblaCarousel from "embla-carousel-react";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 
-const SkeletonCard = () => (
-  <div className="bg-card rounded-2xl overflow-hidden shadow-sm border border-border/40 flex flex-col md:flex-row animate-pulse">
-    <div className="w-full md:w-72 h-48 md:h-full min-h-[220px] bg-secondary" />
-    <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
-      <div>
-        <div className="h-5 bg-secondary rounded w-3/4 mb-3" />
-        <div className="h-3 bg-secondary rounded w-1/2 mb-2" />
-        <div className="h-3 bg-secondary rounded w-1/3" />
-      </div>
-      <div className="flex justify-between items-end">
-        <div>
-          <div className="h-3 bg-secondary rounded w-16 mb-1" />
-          <div className="h-6 bg-secondary rounded w-24" />
-        </div>
-        <div className="h-10 bg-secondary rounded w-28" />
-      </div>
-    </div>
-  </div>
-);
-
-const HotelImageCarousel = ({ name, lat, lon, city, fallbackImage }: { name: string, lat?: number, lon?: number, city?: string, fallbackImage: string }) => {
-  const { images, loading } = useHotelImages(name, lat, lon, city);
-  const [emblaRef, emblaApi] = useEmblaCarousel({ loop: true, direction: 'rtl' });
-  
-  const scrollPrev = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (emblaApi) emblaApi.scrollPrev();
-  }, [emblaApi]);
-
-  const scrollNext = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (emblaApi) emblaApi.scrollNext();
-  }, [emblaApi]);
-
-  const displayImages = images.length > 0 ? images : [fallbackImage];
-
-  if (loading) {
-    return (
-      <div className="w-full h-full bg-secondary animate-pulse flex items-center justify-center">
-        <ImageIcon className="w-8 h-8 text-muted-foreground/30" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative w-full h-full group/carousel overflow-hidden" ref={emblaRef}>
-      <div className="flex w-full h-full">
-        {displayImages.map((src, idx) => (
-          <div className="relative flex-[0_0_100%] min-w-0 w-full h-full" key={idx}>
-            <OptimizedImage 
-              src={src} 
-              alt={`${name} - ${idx + 1}`} 
-              className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover/carousel:scale-105" 
-              wrapperClassName="w-full h-full"
-              onError={(e: any) => { e.currentTarget.src = fallbackImage; }}
-            />
-          </div>
-        ))}
-      </div>
-      
-      {displayImages.length > 1 && (
-        <>
-          <button 
-            onClick={scrollNext} 
-            className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/40 hover:bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center opacity-0 group-hover/carousel:opacity-100 transition-all text-white z-10"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <button 
-            onClick={scrollPrev} 
-            className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/40 hover:bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center opacity-0 group-hover/carousel:opacity-100 transition-all text-white z-10"
-          >
-            <ChevronRight className="w-5 h-5" />
-          </button>
-          
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
-            {displayImages.map((_, idx) => (
-              <div key={idx} className="w-1.5 h-1.5 rounded-full bg-white/60 shadow-sm" />
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
+const CITY_MAP: Record<string, { cityId: number; countryId: number }> = {
+  "Erbil": { cityId: 3482, countryId: 17 },
+  "اربيل": { cityId: 3482, countryId: 17 },
+  "أربيل": { cityId: 3482, countryId: 17 },
+  "Baghdad": { cityId: 3483, countryId: 17 },
+  "بغداد": { cityId: 3483, countryId: 17 },
+  "Basra": { cityId: 3484, countryId: 17 },
+  "البصرة": { cityId: 3484, countryId: 17 },
+  "Najaf": { cityId: 3489, countryId: 17 },
+  "النجف": { cityId: 3489, countryId: 17 },
+  "Karbala": { cityId: 3486, countryId: 17 },
+  "كربلاء": { cityId: 3486, countryId: 17 },
+  "Sulaymaniyah": { cityId: 3487, countryId: 17 },
+  "السليمانية": { cityId: 3487, countryId: 17 },
+  "Duhok": { cityId: 3488, countryId: 17 },
+  "دهوك": { cityId: 3488, countryId: 17 },
+  "Dubai": { cityId: 1001, countryId: 1 },
 };
 
-const HotelCard = ({ hotel, i, searchedCity, onClick }: { hotel: HotelResult; i: number; searchedCity?: string; onClick: () => void }) => {
-  const resolvedCity = hotel.city || (hotel.address as any)?.cityName || searchedCity || "";
-  const { address } = useHotelImages(hotel.name, hotel.lat, hotel.lon, resolvedCity);
-  const displayAddress = address || (hotel.address as any)?.cityName || hotel.neighborhood || (typeof hotel.address === 'string' ? hotel.address : undefined) || "منطقة متميزة";
-
-  return (
-  <motion.div
-    initial={{ opacity: 0, y: 15 }}
-    animate={{ opacity: 1, y: 0 }}
-    transition={{ delay: Math.min(i, 8) * 0.05, ease: "easeOut" }}
-    onClick={onClick}
-    className="bg-card rounded-2xl overflow-hidden shadow-sm border border-border/60 hover:shadow-md hover:border-primary/40 transition-all duration-300 cursor-pointer group flex flex-col md:flex-row mb-4"
-  >
-    {/* Image Section */}
-    <div className="relative w-full md:w-[280px] shrink-0 h-56 md:h-auto min-h-[200px] overflow-hidden group-hover:opacity-95 transition-opacity">
-      <HotelImageCarousel 
-        name={hotel.name} 
-        lat={hotel.lat} 
-        lon={hotel.lon} 
-        city={resolvedCity}
-        fallbackImage={hotel.propertyImage || "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=600&h=400&fit=crop"} 
-      />
-      <div className="absolute top-3 end-3 flex items-center gap-1 bg-black/50 backdrop-blur-md rounded-lg px-2 py-1 z-10">
-        <HeartIcon />
-      </div>
-    </div>
-    
-    {/* Content Section */}
-    <div className="p-4 md:p-5 flex-1 flex flex-col justify-between min-w-0">
-      <div className="flex justify-between items-start gap-4">
-        <div className="min-w-0 flex-1 pr-4">
-          <div className="flex items-center gap-1 mb-1.5">
-            {Array.from({ length: Math.min(hotel.star || 4, 5) }).map((_, idx) => (
-              <Star key={idx} className="w-3.5 h-3.5 text-accent fill-accent" />
-            ))}
-          </div>
-          <h3 className="font-bold text-foreground text-lg group-hover:text-primary transition-colors leading-tight mb-2 truncate">
-            {hotel.name}
-          </h3>
-          <div className="flex items-center gap-1.5 pt-1">
-            <MapPin className="w-4 h-4 text-primary/70 shrink-0" />
-            <span title={displayAddress} className="text-sm text-muted-foreground font-medium underline decoration-dashed decoration-muted-foreground/30 underline-offset-4 truncate block">
-              {displayAddress}
-            </span>
-          </div>
-          
-          <div className="hidden md:flex flex-wrap gap-2 mt-4 text-[11px] font-medium text-success bg-success/5 border border-success/20 px-2.5 py-1.5 rounded-md w-fit">
-            <Check className="w-3.5 h-3.5" /> الإلغاء مجاني في معظم الغرف
-          </div>
-        </div>
-        
-        {/* Rating Block Booking style */}
-        <div className="flex flex-col items-end gap-1 shrink-0">
-          <div className="flex gap-2 items-center">
-            <div className="text-end">
-              <span className="block font-bold text-sm leading-tight">
-                {hotel.reviewScore >= 4.5 ? "استثنائي" : hotel.reviewScore >= 4 ? "رائع" : "جيد جداً"}
-              </span>
-              <span className="text-[11px] text-muted-foreground">{hotel.reviewCount} تقييم</span>
-            </div>
-            <div className="bg-primary text-primary-foreground font-bold rounded-t-lg rounded-br-lg rounded-bl-sm p-2 shadow-sm text-sm">
-              {hotel.reviewScore}
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      {/* Action Section */}
-      <div className="flex flex-col md:flex-row items-start md:items-end justify-between mt-5 pt-4 border-t border-border/40 gap-4">
-        <div className="md:hidden text-[11px] font-medium text-success flex items-center gap-1">
-          <Check className="w-3.5 h-3.5" /> الإلغاء مجاني
-        </div>
-
-        <div className="text-end md:ml-auto w-full md:w-auto flex flex-row justify-end items-center">
-          <button className="h-10 px-8 rounded-xl bg-primary text-primary-foreground font-bold shadow-sm hover:bg-primary/90 transition-all shrink-0">
-            شاهد الخيارات
-          </button>
-        </div>
-      </div>
-    </div>
-  </motion.div>
-  );
-};
-
-const HeartIcon = () => (
-  <svg className="w-5 h-5 text-white stroke-2 drop-shadow-md hover:fill-red-500 hover:text-red-500 transition-colors cursor-pointer" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-  </svg>
-)
-
-// ─── Results Section ───
-const HotelResults = ({ hotels, loading, error, searched, navigate, searchedCity }: {
-  hotels: HotelResult[];
-  loading: boolean;
-  error: string | null;
-  searched: boolean;
-  navigate: ReturnType<typeof useNavigate>;
-  searchedCity?: string;
-}) => (
-  <>
-    {loading && (
-      <div className="flex flex-col gap-4 py-4">
-        {[1, 2, 3, 4].map(n => <SkeletonCard key={n} />)}
-      </div>
-    )}
-
-    {error && (
-      <div className="bg-destructive/10 border border-destructive/20 rounded-2xl p-5 text-center mt-6">
-        <p className="text-destructive font-bold text-sm mb-1">حدث خطأ</p>
-        <p className="text-xs text-muted-foreground">{error}</p>
-      </div>
-    )}
-
-    {!loading && !error && hotels.length === 0 && searched && (
-      <div className="text-center py-16">
-        <Building2 className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
-        <p className="text-foreground font-bold text-base">لم نتمكن من العثور على فنادق</p>
-        <p className="text-muted-foreground text-sm mt-1">يرجى تعديل وجهتك أو تواريخ السفر</p>
-      </div>
-    )}
-
-    {!loading && hotels.length > 0 && (
-      <div className="mt-6">
-        <div className="flex items-center justify-between mb-4">
-          <p className="font-bold text-lg text-foreground">
-            {hotels.length} مكان إقامة وجدناه لك
-          </p>
-          <div className="flex gap-1.5">
-            <button className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-secondary text-xs font-bold text-foreground border border-border/50 hover:bg-primary/5 transition-all">
-              <ArrowUpDown className="w-3.5 h-3.5" /> الفرز حسب
-            </button>
-          </div>
-        </div>
-        <div className="flex flex-col">
-          {hotels.map((hotel, i) => (
-            <HotelCard key={hotel.id} hotel={hotel} i={i} searchedCity={searchedCity} onClick={() => navigate(`/hotels/${hotel.id}`)} />
-          ))}
-        </div>
-      </div>
-    )}
-  </>
-);
-
-// ─── Main Page ───
 const HotelList = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const isMobile = useIsMobile();
-  const { hotels, loading, error, searchHotels } = useHotelSearch();
-  const [searched, setSearched] = useState(false);
+  const [originalHotels, setOriginalHotels] = useState<HotelOffer[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const searchState = location.state as {
-    regionId?: string;
-    checkin?: string;
-    checkout?: string;
-    adults?: number;
+  // Filter & Sort State
+  const [sortBy, setSortBy] = useState<'price_asc' | 'price_desc' | 'rating_desc'>('rating_desc');
+  const [filters, setFilters] = useState({
+    searchQuery: '',
+    priceRange: [0, 2000000] as [number, number],
+    selectedStars: [] as number[],
+  });
+
+  const searchParams = location.state as {
     cityName?: string;
-  } | null;
-
-  useEffect(() => {
-    if ((searchState?.regionId || searchState?.cityName) && searchState?.checkin && searchState?.checkout) {
-      setSearched(true);
-      searchHotels({
-        regionId: searchState.regionId || "",
-        checkin: searchState.checkin,
-        checkout: searchState.checkout,
-        adults: searchState.adults || 2,
-        currency: 'USD',
-        cityName: searchState.cityName,
-      });
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleSearch = async (regionId: string, checkin: string, checkout: string, adults: number, cityName?: string) => {
-    setSearched(true);
-    await searchHotels({ regionId, checkin, checkout, adults, currency: 'USD', cityName });
+    cityId?: number;
+    regionId?: string;
+    checkIn?: string;
+    checkOut?: string;
+    adults?: number;
   };
 
-  const searchedCity = searchState?.cityName || "";
-  const headerTitle = searchedCity ? `فنادق في ${searchedCity}` : "البحث عن فنادق";
-  const headerSubtitle = searchedCity ? `استكشف أفضل الفنادق والعروض في ${searchedCity}` : "قارن أسعار الفنادق من مئات المواقع في مكان واحد";
-  const headerImage = searchedCity ? `https://source.unsplash.com/1600x900/?${searchedCity},cityscape,skyline` : "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=1400&h=300&fit=crop";
+  const fetchHotels = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const cityName = searchParams?.cityName || 'Erbil';
+      const cityData = Object.entries(CITY_MAP).find(
+        ([key]) => key.toLowerCase() === cityName.toLowerCase()
+      )?.[1];
 
-  const resultsProps = { hotels, loading, error, searched, navigate, searchedCity };
+      const cityId = searchParams?.cityId ||
+                     (searchParams?.regionId ? parseInt(searchParams.regionId) : null) ||
+                     cityData?.cityId ||
+                     null;
+      const countryId = cityData?.countryId || 17;
 
-  if (isMobile === undefined) return null;
+      const result = await apiService.searchHotels({
+        city: cityName,
+        cityId: cityId,
+        countryId: countryId,
+        checkIn: searchParams?.checkIn || '2026-05-10',
+        checkOut: searchParams?.checkOut || '2026-05-15',
+        adults: searchParams?.adults || 2
+      });
 
-  if (!isMobile) {
-    return (
-      <DesktopPageLayout
-        title={headerTitle}
-        subtitle={headerSubtitle}
-        heroImage={headerImage}
-      >
-        <div className="max-w-[1000px] mx-auto">
-          <HotelSearchModule
-            onSearch={handleSearch}
-            loading={loading}
-            defaultCity={searchState?.cityName}
-            defaultRegion={searchState?.regionId ? { gaiaId: searchState.regionId, type: "CITY", regionNames: { displayName: searchState.cityName || "", primaryDisplayName: searchState.cityName || "", secondaryDisplayName: "", shortName: "" } } : null}
-            defaultCheckin={searchState?.checkin}
-            defaultCheckout={searchState?.checkout}
-            defaultAdults={searchState?.adults}
-          />
-          <HotelResults {...resultsProps} />
-        </div>
-      </DesktopPageLayout>
-    );
-  }
+      if (!result.success) {
+        setError(result.errorMessage || 'تعذر جلب نتائج الفنادق حالياً.');
+        setOriginalHotels([]);
+      } else {
+        setOriginalHotels(result.data);
+        // Initialize price range based on actual data
+        const prices = result.data.map((h: any) => parseInt(h.price.replace(/,/g, ''))).filter((p: any) => !isNaN(p));
+        if (prices.length > 0) {
+          setFilters(prev => ({ ...prev, priceRange: [Math.min(...prices), Math.max(...prices)] }));
+        }
+      }
+    } catch (err) {
+      setError('حدث خطأ غير متوقع. يرجى المحاولة مجدداً.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchHotels();
+  }, [location.state]);
+
+  const filteredHotels = useMemo(() => {
+    let result = [...originalHotels];
+
+    // Apply Name Search
+    if (filters.searchQuery) {
+      result = result.filter(h => 
+        h.name.toLowerCase().includes(filters.searchQuery.toLowerCase())
+      );
+    }
+
+    // Apply Price Range
+    result = result.filter(h => {
+      const p = parseInt(h.price.replace(/,/g, ''));
+      return p >= filters.priceRange[0] && p <= filters.priceRange[1];
+    });
+
+    // Apply Star Rating
+    if (filters.selectedStars.length > 0) {
+      result = result.filter(h => filters.selectedStars.includes(h.stars));
+    }
+
+    // Apply Sorting
+    result.sort((a, b) => {
+      const priceA = parseInt(a.price.replace(/,/g, ''));
+      const priceB = parseInt(b.price.replace(/,/g, ''));
+      if (sortBy === 'price_asc') return priceA - priceB;
+      if (sortBy === 'price_desc') return priceB - priceA;
+      if (sortBy === 'rating_desc') return b.rating - a.rating;
+      return 0;
+    });
+
+    return result;
+  }, [originalHotels, filters, sortBy]);
+
+  const clearFilters = () => {
+    const prices = originalHotels.map(h => parseInt(h.price.replace(/,/g, ''))).filter(p => !isNaN(p));
+    setFilters({
+      searchQuery: '',
+      priceRange: [Math.min(...prices), Math.max(...prices)] as [number, number],
+      selectedStars: [],
+    });
+  };
+
+  const cityName = searchParams?.cityName || 'اربيل';
+  const guests = searchParams?.adults || 2;
+
+  const sortLabels = {
+    'price_asc': 'الأقل سعراً',
+    'price_desc': 'الأعلى سعراً',
+    'rating_desc': 'الأعلى تقييماً',
+  };
 
   return (
-    <div className="mobile-container bg-background pb-24 min-h-screen">
-      <div className="px-5 pt-14 pb-2 bg-card/80 backdrop-blur-md sticky top-0 z-40 border-b border-border/50">
-        <div className="flex items-center justify-between">
-          <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center border border-border">
-            <ArrowRight className="w-5 h-5 text-foreground" strokeWidth={2} />
+    <div className="min-h-screen bg-[#F8F9FA] pb-32" dir="rtl">
+      {/* Premium Header */}
+      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-xl border-b border-border/40 px-6 h-20 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-4">
+          <button onClick={() => navigate(-1)} className="w-12 h-12 flex items-center justify-center rounded-2xl bg-secondary/80 hover:bg-secondary transition-colors">
+            <ArrowRight className="w-6 h-6" />
           </button>
-          <div className="text-center">
-            <h1 className="text-foreground font-bold text-[15px]">{searchedCity ? `فنادق في ${searchedCity}` : "البحث عن فنادق"}</h1>
-            {searchedCity ? <p className="text-[11px] text-muted-foreground">{searchedCity} • {searchState?.adults || 2} بالغين</p> : null}
+          
+          <div className="text-right">
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-black tracking-tight">{cityName}</h1>
+              <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 font-black text-[10px]">
+                {guests} بالغين
+              </Badge>
+            </div>
+            <div className="flex items-center gap-1 mt-0.5 opacity-60">
+              <MapPin className="w-3 h-3 text-primary" />
+              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground"> {searchParams?.checkIn} - {searchParams?.checkOut}</span>
+            </div>
           </div>
-          <div className="w-9" />
         </div>
-      </div>
-      <div className="px-4 mt-4">
-        <div className="mb-6">
-          <HotelSearchModule
-            onSearch={handleSearch}
-            loading={loading}
-            defaultCity={searchState?.cityName}
-            defaultRegion={searchState?.regionId ? { gaiaId: searchState.regionId, type: "CITY", regionNames: { displayName: searchState.cityName || "", primaryDisplayName: searchState.cityName || "", secondaryDisplayName: "", shortName: "" } } : null}
-            defaultCheckin={searchState?.checkin}
-            defaultCheckout={searchState?.checkout}
-            defaultAdults={searchState?.adults}
-          />
+
+        <button 
+          onClick={() => navigate('/')} 
+          className="w-12 h-12 flex items-center justify-center rounded-2xl bg-secondary/80 hover:bg-secondary transition-colors"
+        >
+          <Pencil className="w-5 h-5 text-primary" />
+        </button>
+      </header>
+
+      <main className="container mx-auto px-4 lg:px-8 py-8">
+        <div className="flex flex-col lg:flex-row gap-8">
+          {/* Desktop Sidebar Filters */}
+          <aside className="hidden lg:block w-80 shrink-0 sticky top-28 self-start bg-card rounded-[32px] p-6 border border-border/40 shadow-sm">
+             <FilterSidebar 
+               originalHotels={originalHotels} 
+               filters={filters} 
+               setFilters={setFilters} 
+               onClear={clearFilters}
+             />
+          </aside>
+
+          {/* Main Results Area */}
+          <div className="flex-1">
+            {/* Top Bar: Sort & Summary */}
+            {!loading && originalHotels.length > 0 && (
+              <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4 px-2">
+                <div>
+                  <h2 className="text-2xl font-black">{filteredHotels.length} فندق متاح</h2>
+                  <p className="text-sm font-bold text-muted-foreground opacity-70">نقارن لك أفضل الأسعار في {cityName}</p>
+                </div>
+
+                <div className="flex items-center gap-3 self-end md:self-auto">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" className="h-12 px-6 rounded-2xl border-border/40 bg-white font-black text-xs flex items-center gap-2">
+                        <ArrowUpDown className="w-4 h-4 text-primary" />
+                        ترتيب حسب: {sortLabels[sortBy]}
+                        <ChevronDown className="w-4 h-4 opacity-50" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="rounded-2xl p-2 min-w-[200px]">
+                      <DropdownMenuItem onClick={() => setSortBy('rating_desc')} className="rounded-xl font-bold py-3">الأعلى تقييماً</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setSortBy('price_asc')} className="rounded-xl font-bold py-3">الأقل سعراً</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setSortBy('price_desc')} className="rounded-xl font-bold py-3">الأعلى سعراً</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            )}
+
+            {/* Content States */}
+            <div className="space-y-4">
+              {loading ? (
+                // Premium Skeleton Loaders
+                [...Array(5)].map((_, i) => (
+                  <div key={i} className="bg-card rounded-[32px] overflow-hidden border border-border/40 p-5 flex flex-col md:flex-row gap-6 h-auto md:h-56">
+                    <div className="flex-1 space-y-4 order-2 md:order-1">
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-24 rounded-full" />
+                        <Skeleton className="h-6 w-2/3 rounded-full" />
+                        <Skeleton className="h-4 w-1/2 rounded-full" />
+                      </div>
+                      <div className="flex justify-between items-end pt-4">
+                        <div className="space-y-2">
+                          <Skeleton className="h-3 w-20 rounded-full" />
+                          <Skeleton className="h-8 w-32 rounded-full" />
+                        </div>
+                        <Skeleton className="h-11 w-32 rounded-2xl" />
+                      </div>
+                    </div>
+                    <Skeleton className="w-full md:w-72 h-56 md:h-full rounded-3xl order-1 md:order-2" />
+                  </div>
+                ))
+              ) : error ? (
+                <div className="py-24 text-center bg-card rounded-[40px] border border-border/40 space-y-6">
+                   <div className="w-24 h-24 bg-destructive/10 rounded-full flex items-center justify-center mx-auto text-destructive">
+                      <Search className="w-12 h-12 opacity-50" />
+                   </div>
+                   <div className="space-y-2">
+                     <h3 className="text-xl font-black">عذراً، حدث خطأ ما</h3>
+                     <p className="text-sm font-bold text-muted-foreground">{error}</p>
+                   </div>
+                   <Button onClick={fetchHotels} variant="outline" className="rounded-2xl px-8 h-12 font-black">إعادة المحاولة</Button>
+                </div>
+              ) : filteredHotels.length === 0 ? (
+                <div className="py-24 text-center bg-card rounded-[40px] border border-border/40 space-y-6">
+                   <div className="w-24 h-24 bg-primary/5 rounded-full flex items-center justify-center mx-auto text-primary">
+                      <LayoutGrid className="w-12 h-12 opacity-20" />
+                   </div>
+                   <div className="space-y-2">
+                     <h3 className="text-xl font-black">لا توجد نتائج تطابق بحثك</h3>
+                     <p className="text-sm font-bold text-muted-foreground">جرب تغيير معايير التصفية أو مسح الكل</p>
+                   </div>
+                   <Button onClick={clearFilters} variant="default" className="rounded-2xl px-10 h-12 font-black shadow-lg shadow-primary/20">مسح كافة الفلاتر</Button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-6">
+                  <AnimatePresence mode="popLayout">
+                    {filteredHotels.map((hotel, index) => (
+                      <HotelCard 
+                        key={hotel.hotelId} 
+                        hotel={hotel} 
+                        index={index} 
+                        onClick={() => navigate(`/hotel/${hotel.hotelId}`, { 
+                          state: { 
+                            hotel,
+                            cityName: hotel.location || searchParams?.cityName,
+                            checkIn: searchParams?.checkIn,
+                            checkOut: searchParams?.checkOut,
+                            adultsCount: searchParams?.adults
+                          } 
+                        })}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-        <HotelResults {...resultsProps} />
-      </div>
+      </main>
+
+      {/* Mobile Floating Filter Trigger */}
+      {!loading && originalHotels.length > 0 && (
+        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-40 lg:hidden">
+           <Sheet>
+             <SheetTrigger asChild>
+               <button className="h-16 px-10 bg-black text-white rounded-full flex items-center gap-3 shadow-[0_20px_50px_rgba(0,0,0,0.3)] active:scale-95 transition-all border border-white/10">
+                  <Filter className="w-6 h-6" />
+                  <span className="text-sm font-black tracking-widest uppercase">تصفية النتائج</span>
+                  { (filters.selectedStars.length > 0 || filters.searchQuery) && (
+                    <div className="w-2.5 h-2.5 bg-primary rounded-full ring-4 ring-primary/20" />
+                  )}
+               </button>
+             </SheetTrigger>
+             <SheetContent side="bottom" className="rounded-t-[40px] px-6 pb-12 pt-8 h-[85vh] border-none shadow-2xl overflow-y-auto">
+                <SheetHeader className="mb-6">
+                  <div className="flex items-center justify-between">
+                    <SheetTitle className="text-right font-black text-xl">تصفية النتائج</SheetTitle>
+                    { (filters.selectedStars.length > 0 || filters.searchQuery) && (
+                      <button onClick={clearFilters} className="text-xs font-bold text-primary">مسح الكل</button>
+                    )}
+                  </div>
+                  <SheetDescription className="text-right text-xs">
+                    استخدم معايير التصفية أدناه لتضييق نطاق البحث والعثور على الفندق المثالي.
+                  </SheetDescription>
+                </SheetHeader>
+
+                <FilterSidebar 
+                  originalHotels={originalHotels} 
+                  filters={filters} 
+                  setFilters={setFilters} 
+                  onClear={clearFilters}
+                />
+             </SheetContent>
+           </Sheet>
+        </div>
+      )}
+
       <BottomNav />
     </div>
   );

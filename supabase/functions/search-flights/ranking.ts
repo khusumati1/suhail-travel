@@ -13,6 +13,11 @@ const W_STOPS = 100;
 function computeScore(offer: NormalizedOffer): number {
   const base = (offer.price * W_PRICE) + (offer.duration * W_DURATION) + (offer.stops * W_STOPS);
 
+  // Recovery-based ranking: lower confidence = higher score = ranks lower
+  // Exact matches (confidence 1.0) have 0 penalty
+  const confidence = offer._recoveryConfidence ?? 1.0;
+  const confidencePenalty = (1 - confidence) * 2000; // Strong penalty to pin exact results
+
   // Reliability-based ranking: higher reliability = lower score = ranks higher
   const reliability = offer.reliability ?? 0.70;
   const reliabilityPenalty = (1 - reliability) * 300;
@@ -20,7 +25,7 @@ function computeScore(offer: NormalizedOffer): number {
   // HARD RULE: non-bookable flights always rank below bookable
   const bookablePenalty = offer.bookable ? 0 : 500;
 
-  return base + reliabilityPenalty + bookablePenalty;
+  return base + reliabilityPenalty + bookablePenalty + confidencePenalty;
 }
 
 // ---- Ranking ----

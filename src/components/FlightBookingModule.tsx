@@ -1,11 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   MapPin, ArrowLeftRight, CalendarDays, Users, Search,
   Plane, Plus, Minus, ChevronLeft, ArrowRightLeft, MapPinned, Clock,
 } from "lucide-react";
-import { Drawer, DrawerContent, DrawerTrigger } from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerTrigger, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { Dialog, DialogContent, DialogTrigger, DialogTitle } from "@/components/ui/dialog";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -156,6 +156,14 @@ const FlightBookingModule = ({ variant = "full" }: FlightBookingModuleProps) => 
   const [sheetOpen, setSheetOpen] = useState(false);
   const [fromSearchOpen, setFromSearchOpen] = useState(false);
   const [toSearchOpen, setToSearchOpen] = useState(false);
+  
+  // Multi-city legs state
+  const [legs, setLegs] = useState([
+    { fromCity: "بغداد", fromCode: "BGW", toCity: "", toCode: "", date: undefined as Date | undefined },
+    { fromCity: "", fromCode: "", toCity: "", toCode: "", date: undefined as Date | undefined }
+  ]);
+  const [activeLegIndex, setActiveLegIndex] = useState(0);
+  const [searchSide, setSearchSide] = useState<'from' | 'to'>('from');
 
   const totalPassengers = adults + children + infants;
 
@@ -170,6 +178,29 @@ const FlightBookingModule = ({ variant = "full" }: FlightBookingModuleProps) => 
     setToCity(fromCity);
     setToCode(fromCode);
   };
+
+  // Sindibad-style Smart Path Sync
+  useEffect(() => {
+    if (tripType === 'multi-city') {
+      const newLegs = [...legs];
+      let changed = false;
+
+      // Sync Leg 2 From with Leg 1 To
+      if (legs[0].toCity && legs[1].fromCity !== legs[0].toCity) {
+        newLegs[1].fromCity = legs[0].toCity;
+        newLegs[1].fromCode = legs[0].toCode;
+        changed = true;
+      }
+
+      // Sync Leg 2 Date (must be >= Leg 1 Date)
+      if (legs[0].date && legs[1].date && legs[1].date < legs[0].date) {
+        newLegs[1].date = legs[0].date;
+        changed = true;
+      }
+
+      if (changed) setLegs(newLegs);
+    }
+  }, [legs[0].toCity, legs[0].date, tripType]);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -237,8 +268,8 @@ const FlightBookingModule = ({ variant = "full" }: FlightBookingModuleProps) => 
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3 lg:space-y-5">
-      {/* Trip Type Selector */}
-      <div className="flex bg-secondary/80 rounded-xl p-0.5 border border-border/50 lg:max-w-xl w-full">
+      {/* Trip Type Selector - Refined for Multi-City */}
+      <div className="flex border-b border-border/40 pb-2 mb-4 overflow-x-auto no-scrollbar justify-center">
         {tripTypes.map((t) => {
           const isActive = tripType === t.id;
           return (
@@ -246,166 +277,264 @@ const FlightBookingModule = ({ variant = "full" }: FlightBookingModuleProps) => 
               key={t.id}
               onClick={() => setTripType(t.id)}
               className={cn(
-                "flex-1 py-2 lg:py-2.5 px-1.5 lg:px-4 rounded-[10px] text-[9px] sm:text-[11px] lg:text-[13px] font-bold transition-all duration-200 relative",
-                isActive
-                  ? "bg-card text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
+                "relative py-3 px-6 text-[13px] font-black transition-all duration-300",
+                isActive ? "text-primary" : "text-muted-foreground/60"
               )}
             >
-              <span className="flex items-center justify-center gap-0.5 sm:gap-1">
-                {tripTypeIcons[t.id]}
-                {t.label}
-              </span>
+              {t.label}
+              {isActive && (
+                <motion.div 
+                  layoutId="activeTab"
+                  className="absolute bottom-0 inset-x-4 h-[3px] bg-primary rounded-full" 
+                />
+              )}
             </button>
           );
         })}
       </div>
 
-      {/* Desktop: horizontal row | Mobile: stacked */}
-      <div className="flex flex-col lg:flex-row lg:gap-3 lg:items-end gap-3">
-        {/* Locations */}
-        <div className="flex gap-2 items-center lg:flex-1">
-          <button
-            onClick={() => setFromSearchOpen(true)}
-            className="flex-1 flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start"
-          >
-            <MapPin className="w-4 h-4 text-primary flex-shrink-0" strokeWidth={2} />
-            <div className="flex-1 min-w-0">
-              <p className="text-[10px] lg:text-xs text-muted-foreground">المغادرة من</p>
-              <p className={cn("text-sm font-bold truncate", fromCity ? "text-foreground" : "text-muted-foreground")}>
-                {fromCity || "اختر المدينة"}
-              </p>
-              {fromCode && <p className="text-[10px] text-muted-foreground" dir="ltr">{fromCode}</p>}
-            </div>
-          </button>
-          <button
-            onClick={swapCities}
-            className="w-9 h-9 lg:w-11 lg:h-11 rounded-full bg-primary flex items-center justify-center flex-shrink-0 shadow-sm active:scale-90 hover:scale-110 transition-transform"
-          >
-            <ArrowLeftRight className="w-4 h-4 text-primary-foreground" strokeWidth={2} />
-          </button>
-          <button
-            onClick={() => setToSearchOpen(true)}
-            className="flex-1 flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start"
-          >
-            <MapPin className="w-4 h-4 text-muted-foreground flex-shrink-0" strokeWidth={2} />
-            <div className="flex-1 min-w-0">
-              <p className="text-[10px] lg:text-xs text-muted-foreground">الوجهة إلى</p>
-              <p className={cn("text-sm truncate", toCity ? "font-bold text-foreground" : "text-muted-foreground")}>
-                {toCity || "إلى أين؟"}
-              </p>
-              {toCode && <p className="text-[10px] text-muted-foreground" dir="ltr">{toCode}</p>}
-            </div>
-          </button>
-        </div>
+      {tripType === 'multi-city' ? (
+        <div className="space-y-4">
+          {legs.map((leg, idx) => (
+            <div key={idx} className="space-y-3">
+              {/* Leg Block */}
+              <div className="bg-white rounded-[24px] border border-border/60 shadow-sm p-4 space-y-4">
+                {/* Cities Input */}
+                <div className="relative flex flex-col gap-0">
+                  <button
+                    onClick={() => { setActiveLegIndex(idx); setSearchSide('from'); setFromSearchOpen(true); }}
+                    className="w-full flex items-center gap-3 py-4 border-b border-border/40 text-right"
+                  >
+                    <MapPin className="w-5 h-5 text-muted-foreground/40" />
+                    <div className="flex-1">
+                      <p className="text-[11px] font-bold text-muted-foreground mb-0.5">الرحلة {idx === 0 ? 'الأولى' : 'الثانية'} من</p>
+                      <p className={cn("text-sm font-black", leg.fromCity ? "text-foreground" : "text-muted-foreground/40")}>
+                        {leg.fromCity || "من أين؟"}
+                      </p>
+                    </div>
+                  </button>
 
-        {/* Dates */}
-        <div className="flex gap-2 lg:flex-1">
-          <Popover>
-            <PopoverTrigger asChild>
-              <button className="flex-1 flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start">
-                <CalendarDays className="w-4 h-4 text-primary flex-shrink-0" strokeWidth={2} />
-                <div>
-                  <p className="text-[10px] lg:text-xs text-muted-foreground">تاريخ المغادرة</p>
-                  <p className={cn("text-sm", departDate ? "font-bold text-foreground" : "text-muted-foreground")}>
-                    {departDate ? format(departDate, "d MMM yyyy", { locale: ar }) : "اختر التاريخ"}
-                  </p>
-                </div>
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="start">
-              <Calendar
-                mode="single"
-                selected={departDate}
-                onSelect={setDepartDate}
-                disabled={(date) => date < today}
-                initialFocus
-                className={cn("p-3 pointer-events-auto")}
-              />
-            </PopoverContent>
-          </Popover>
-
-          <AnimatePresence mode="wait">
-            {tripType === "round-trip" ? (
-              <motion.div
-                key="return-date"
-                initial={{ opacity: 0, width: 0, scale: 0.95 }}
-                animate={{ opacity: 1, width: "100%", scale: 1 }}
-                exit={{ opacity: 0, width: 0, scale: 0.95 }}
-                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 overflow-hidden"
-              >
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <button className="w-full flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start">
-                      <CalendarDays className="w-4 h-4 text-muted-foreground flex-shrink-0" strokeWidth={2} />
-                      <div>
-                        <p className="text-[10px] lg:text-xs text-muted-foreground">تاريخ العودة</p>
-                        <p className={cn("text-sm", returnDate ? "font-bold text-foreground" : "text-muted-foreground")}>
-                          {returnDate ? format(returnDate, "d MMM yyyy", { locale: ar }) : "اختر التاريخ"}
-                        </p>
-                      </div>
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={returnDate}
-                      onSelect={setReturnDate}
-                      disabled={(date) => date < (departDate || today)}
-                      initialFocus
-                      className={cn("p-3 pointer-events-auto")}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="return-optional"
-                initial={{ opacity: 0, width: 0, scale: 0.95 }}
-                animate={{ opacity: 1, width: "100%", scale: 1 }}
-                exit={{ opacity: 0, width: 0, scale: 0.95 }}
-                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                className="hidden lg:flex flex-1 overflow-hidden"
-              >
-                <div className="w-full flex items-center gap-2.5 bg-secondary/50 rounded-xl px-4 py-3.5 border border-border/50">
-                  <CalendarDays className="w-4 h-4 text-muted-foreground/40 flex-shrink-0" strokeWidth={2} />
-                  <div>
-                    <p className="text-xs text-muted-foreground/50">تاريخ العودة</p>
-                    <p className="text-sm text-muted-foreground/40">اختياري</p>
+                  <div className="absolute right-4 top-1/2 -translate-y-1/2 z-10">
+                     <button className="w-10 h-10 rounded-2xl bg-white border border-border/60 shadow-sm flex items-center justify-center text-muted-foreground active:scale-90 transition-transform">
+                       <ArrowLeftRight className="w-4 h-4 rotate-90" />
+                     </button>
                   </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
 
-        {/* Passengers */}
-        <div className="lg:flex-1">
-          {isMobile ? (
-            <Drawer open={sheetOpen} onOpenChange={setSheetOpen}>
-              <DrawerTrigger asChild>{passengerTrigger}</DrawerTrigger>
-              <DrawerContent className="max-w-md mx-auto">{passengerSheetContent}</DrawerContent>
-            </Drawer>
-          ) : (
-            <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
-              <DialogTrigger asChild>{passengerTrigger}</DialogTrigger>
-              <DialogContent className="sm:max-w-md p-0 border-border" aria-describedby={undefined}>
-                <DialogTitle className="sr-only">المسافرون والدرجة</DialogTitle>
-                {passengerSheetContent}
-              </DialogContent>
-            </Dialog>
-          )}
+                  <button
+                    onClick={() => { setActiveLegIndex(idx); setSearchSide('to'); setToSearchOpen(true); }}
+                    className="w-full flex items-center gap-3 py-4 text-right"
+                  >
+                    <MapPin className="w-5 h-5 text-muted-foreground/40" />
+                    <div className="flex-1">
+                      <p className="text-[11px] font-bold text-muted-foreground mb-0.5">إلى</p>
+                      <p className={cn("text-sm font-black", leg.toCity ? "text-foreground" : "text-muted-foreground/40")}>
+                        {leg.toCity || "إلى أين؟"}
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Date Input */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button className="w-full bg-white rounded-[24px] border border-border/60 shadow-sm p-5 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <CalendarDays className="w-5 h-5 text-muted-foreground/40" />
+                      <p className={cn("text-sm font-black", leg.date ? "text-foreground" : "text-muted-foreground/40")}>
+                        {leg.date ? format(leg.date, "d MMMM yyyy", { locale: ar }) : `حدد تاريخ الرحلة ${idx === 0 ? 'الأولى' : 'الثانية'}`}
+                      </p>
+                    </div>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0 rounded-[24px] overflow-hidden shadow-2xl">
+                   <Calendar
+                    mode="single"
+                    selected={leg.date}
+                    onSelect={(d) => {
+                      const newLegs = [...legs];
+                      newLegs[idx].date = d;
+                      setLegs(newLegs);
+                    }}
+                    disabled={(date) => date < today}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+          ))}
+
+          {/* Passenger/Class Selector */}
+          <div className="flex items-center justify-end gap-3 pt-2">
+             <Drawer open={sheetOpen} onOpenChange={setSheetOpen}>
+                <DrawerTrigger asChild>
+                   <button className="h-12 px-6 rounded-full bg-secondary/50 border border-border text-sm font-black flex items-center gap-2">
+                     {adults} المسافر
+                   </button>
+                </DrawerTrigger>
+                <DrawerContent className="max-w-md mx-auto rounded-t-[40px] pb-10">
+                   {passengerSheetContent}
+                </DrawerContent>
+             </Drawer>
+
+             <button 
+              onClick={() => setSheetOpen(true)}
+              className="h-12 px-6 rounded-full bg-secondary/50 border border-border text-sm font-black"
+             >
+               {cabinClassLabel[cabinClass]}
+             </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        /* Original Single/Return Search UI */
+        <div className="flex flex-col lg:flex-row lg:gap-3 lg:items-end gap-3">
+          {/* Locations */}
+          <div className="flex gap-2 items-center lg:flex-1">
+            <button
+              onClick={() => setFromSearchOpen(true)}
+              className="flex-1 flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start"
+            >
+              <MapPin className="w-4 h-4 text-primary flex-shrink-0" strokeWidth={2} />
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] lg:text-xs text-muted-foreground">المغادرة من</p>
+                <p className={cn("text-sm font-bold truncate", fromCity ? "text-foreground" : "text-muted-foreground")}>
+                  {fromCity || "اختر المدينة"}
+                </p>
+                {fromCode && <p className="text-[10px] text-muted-foreground" dir="ltr">{fromCode}</p>}
+              </div>
+            </button>
+            <button
+              onClick={swapCities}
+              className="w-9 h-9 lg:w-11 lg:h-11 rounded-full bg-primary flex items-center justify-center flex-shrink-0 shadow-sm active:scale-90 hover:scale-110 transition-transform"
+            >
+              <ArrowLeftRight className="w-4 h-4 text-primary-foreground" strokeWidth={2} />
+            </button>
+            <button
+              onClick={() => setToSearchOpen(true)}
+              className="flex-1 flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start"
+            >
+              <MapPin className="w-4 h-4 text-muted-foreground flex-shrink-0" strokeWidth={2} />
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] lg:text-xs text-muted-foreground">الوجهة إلى</p>
+                <p className={cn("text-sm truncate", toCity ? "font-bold text-foreground" : "text-muted-foreground")}>
+                  {toCity || "إلى أين؟"}
+                </p>
+                {toCode && <p className="text-[10px] text-muted-foreground" dir="ltr">{toCode}</p>}
+              </div>
+            </button>
+          </div>
+
+          {/* Dates */}
+          <div className="flex gap-2 lg:flex-1">
+            <Popover>
+              <PopoverTrigger asChild>
+                <button className="flex-1 flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start">
+                  <CalendarDays className="w-4 h-4 text-primary flex-shrink-0" strokeWidth={2} />
+                  <div>
+                    <p className="text-[10px] lg:text-xs text-muted-foreground">تاريخ المغادرة</p>
+                    <p className={cn("text-sm", departDate ? "font-bold text-foreground" : "text-muted-foreground")}>
+                      {departDate ? format(departDate, "d MMM yyyy", { locale: ar }) : "اختر التاريخ"}
+                    </p>
+                  </div>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                  mode="single"
+                  selected={departDate}
+                  onSelect={setDepartDate}
+                  disabled={(date) => date < today}
+                  initialFocus
+                  className={cn("p-3 pointer-events-auto")}
+                />
+              </PopoverContent>
+            </Popover>
+
+            <AnimatePresence mode="wait">
+              {tripType === "round-trip" ? (
+                <motion.div
+                  key="return-date"
+                  initial={{ opacity: 0, width: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, width: "100%", scale: 1 }}
+                  exit={{ opacity: 0, width: 0, scale: 0.95 }}
+                  transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                  className="flex-1 overflow-hidden"
+                >
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <button className="w-full flex items-center gap-2.5 bg-secondary rounded-xl px-3.5 lg:px-4 py-3 lg:py-3.5 border border-border hover:border-primary/30 transition-colors text-start">
+                        <CalendarDays className="w-4 h-4 text-muted-foreground flex-shrink-0" strokeWidth={2} />
+                        <div>
+                          <p className="text-[10px] lg:text-xs text-muted-foreground">تاريخ العودة</p>
+                          <p className={cn("text-sm", returnDate ? "font-bold text-foreground" : "text-muted-foreground")}>
+                            {returnDate ? format(returnDate, "d MMM yyyy", { locale: ar }) : "اختر التاريخ"}
+                          </p>
+                        </div>
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={returnDate}
+                        onSelect={setReturnDate}
+                        disabled={(date) => date < (departDate || today)}
+                        initialFocus
+                        className={cn("p-3 pointer-events-auto")}
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="return-optional"
+                  initial={{ opacity: 0, width: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, width: "100%", scale: 1 }}
+                  exit={{ opacity: 0, width: 0, scale: 0.95 }}
+                  transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                  className="hidden lg:flex flex-1 overflow-hidden"
+                >
+                  <div className="w-full flex items-center gap-2.5 bg-secondary/50 rounded-xl px-4 py-3.5 border border-border/50">
+                    <CalendarDays className="w-4 h-4 text-muted-foreground/40 flex-shrink-0" strokeWidth={2} />
+                    <div>
+                      <p className="text-xs text-muted-foreground/50">تاريخ العودة</p>
+                      <p className="text-sm text-muted-foreground/40">اختياري</p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Passengers */}
+          <div className="lg:flex-1">
+            {isMobile ? (
+              <Drawer open={sheetOpen} onOpenChange={setSheetOpen}>
+                <DrawerTrigger asChild>{passengerTrigger}</DrawerTrigger>
+                <DrawerContent className="max-w-md mx-auto">
+                  <DrawerHeader className="sr-only">
+                    <DrawerTitle>المسافرون والدرجة</DrawerTitle>
+                  </DrawerHeader>
+                  {passengerSheetContent}
+                </DrawerContent>
+              </Drawer>
+            ) : (
+              <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
+                <DialogTrigger asChild>{passengerTrigger}</DialogTrigger>
+                <DialogContent className="sm:max-w-md p-0 border-border" aria-describedby={undefined}>
+                  <DialogTitle className="sr-only">المسافرون والدرجة</DialogTitle>
+                  {passengerSheetContent}
+                </DialogContent>
+              </Dialog>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Search Button */}
       <button
         onClick={handleSearch}
-        className="btn-primary flex items-center justify-center gap-2 lg:max-w-xs lg:mx-auto lg:px-16"
+        className="w-full h-16 bg-[#C40047] text-white rounded-[24px] font-black text-xl shadow-lg active:scale-95 transition-all mt-4 flex items-center justify-center gap-2"
       >
-        <Search className="w-5 h-5" strokeWidth={2} />
-        <span>بحث عن رحلات</span>
+        <span>إبحث</span>
       </button>
 
       {/* Quick Search Routes */}
@@ -444,16 +573,34 @@ const FlightBookingModule = ({ variant = "full" }: FlightBookingModuleProps) => 
       <CitySearchModal
         open={fromSearchOpen}
         onOpenChange={setFromSearchOpen}
-        onSelect={(name, code) => { setFromCity(name); setFromCode(code); }}
+        onSelect={(name, code) => { 
+          if (tripType === 'multi-city') {
+            const newLegs = [...legs];
+            newLegs[activeLegIndex].fromCity = name;
+            newLegs[activeLegIndex].fromCode = code;
+            setLegs(newLegs);
+          } else {
+            setFromCity(name); setFromCode(code); 
+          }
+        }}
         label="المغادرة من"
-        excludeCode={toCode}
+        excludeCode={tripType === 'multi-city' ? legs[activeLegIndex].toCode : toCode}
       />
       <CitySearchModal
         open={toSearchOpen}
         onOpenChange={setToSearchOpen}
-        onSelect={(name, code) => { setToCity(name); setToCode(code); }}
+        onSelect={(name, code) => { 
+          if (tripType === 'multi-city') {
+            const newLegs = [...legs];
+            newLegs[activeLegIndex].toCity = name;
+            newLegs[activeLegIndex].toCode = code;
+            setLegs(newLegs);
+          } else {
+            setToCity(name); setToCode(code); 
+          }
+        }}
         label="الوجهة إلى"
-        excludeCode={fromCode}
+        excludeCode={tripType === 'multi-city' ? legs[activeLegIndex].fromCode : fromCode}
       />
     </motion.div>
   );

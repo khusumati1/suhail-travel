@@ -1,285 +1,265 @@
+// src/components/AirportTaxiModule.tsx
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  ArrowRight, ArrowLeft, MapPin, Phone, Calendar as CalendarIcon, 
-  Clock, Car, Users, CheckCircle2, Building, PlaneTakeoff, PlaneLanding,
-  ChevronRight, ChevronLeft
+import {
+  MapPin, Phone, Calendar as CalendarIcon,
+  Clock, Car, Users, CheckCircle2, PlaneTakeoff, PlaneLanding,
+  ChevronLeft, Luggage, Baby, UserCheck, Shield, Sparkles, Info, AlertCircle
 } from "lucide-react";
-import { useForm, Controller } from "react-hook-form";
+import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-// --- Types & Schema ---
-
-const carTypes = [
-  { id: "small", name: "سيارة صغيرة", icon: Car, price: 25000, description: "تتسع لـ 3 أشخاص + 2 حقائب", image: "🚗" },
-  { id: "suv", name: "سيارة عالية (SUV)", icon: Building, price: 40000, description: "تتسع لـ 4 أشخاص + 4 حقائب", image: "🚘" },
-  { id: "family", name: "سيارة عائلية (Van)", icon: Users, price: 60000, description: "تتسع لـ 7 أشخاص + 6 حقائب", image: "🚐" },
+const AIRPORTS = [
+  { id: "BGW", name: "مطار بغداد الدولي", code: "BGW" },
+  { id: "BSR", name: "مطار البصرة الدولي", code: "BSR" },
+  { id: "EBL", name: "مطار أربيل الدولي", code: "EBL" },
+  { id: "NJF", name: "مطار النجف الأشرف", code: "NJF" },
+  { id: "ISU", name: "مطار السليمانية الدولي", code: "ISU" },
 ];
 
-const taxiSchema = z.object({
+const VEHICLES = [
+  { id: "economy", name: "اقتصادي بلس", desc: "تويوتا كورولا أو مشابه", price: 15000 },
+  { id: "comfort", name: "مريح بريميوم", desc: "تويوتا كامري أو مشابه", price: 25000 },
+  { id: "business", name: "رجال أعمال", desc: "مرسيدس E-Class", price: 45000 },
+  { id: "suv", name: "SUV عائلي", desc: "شيفروليه تاهو", price: 55000 },
+];
+
+const schema = z.object({
   direction: z.enum(["to-airport", "from-airport"]),
-  location: z.string().min(5, "يرجى إدخال الموقع بالتفصيل"),
-  date: z.string().min(1, "يرجى اختيار التاريخ"),
-  time: z.string().min(1, "يرجى اختيار الوقت"),
-  carType: z.string().min(1, "يرجى اختيار نوع السيارة"),
-  phone: z.string().min(10, "رقم الهاتف غير مكتمل").regex(/^[0-9]+$/, "يجب أن يحتوي الرقم على أرقام فقط"),
+  airport: z.string().min(1, "يجب اختيار مطار"),
+  location: z.string().min(3, "أدخل العنوان بالتفصيل"),
+  date: z.string().min(1, "اختر التاريخ"),
+  time: z.string().min(1, "اختر الوقت"),
+  vehicle: z.string().min(1, "يجب اختيار نوع السيارة"),
+  phone: z.string().min(10, "رقم الهاتف يجب أن يكون 10 أرقام على الأقل"),
+  passengerName: z.string().min(3, "أدخل الاسم الكامل"),
+  flightNumber: z.string().optional(),
 });
+type FormData = z.infer<typeof schema>;
 
-type TaxiForm = z.infer<typeof taxiSchema>;
-
-const steps = ["direction", "location", "date-time", "car-type", "contact", "success"] as const;
+const STEPS = ["direction", "route", "datetime", "vehicle", "confirm", "success"] as const;
 
 export default function AirportTaxiModule() {
-  const [currentStep, setCurrentStep] = useState(0);
-  
-  const {
-    control,
-    register,
-    handleSubmit,
-    setValue,
-    watch,
-    formState: { errors },
-  } = useForm<TaxiForm>({
-    resolver: zodResolver(taxiSchema),
-    defaultValues: {
-      direction: "from-airport",
-      carType: "small",
-    },
+  const [step, setStep] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const { register, setValue, watch, handleSubmit, trigger, formState: { errors } } = useForm<FormData>({
+    resolver: zodResolver(schema),
+    defaultValues: { direction: "from-airport", airport: "BGW", vehicle: "comfort" },
   });
 
-  const formValues = watch();
+  const v = watch();
 
-  const nextStep = () => setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
-  const prevStep = () => setCurrentStep((prev) => Math.max(prev - 1, 0));
+  const validateAndNext = async () => {
+    let fieldsToValidate: (keyof FormData)[] = [];
+    if (step === 0) fieldsToValidate = ["direction"];
+    if (step === 1) fieldsToValidate = ["airport", "location"];
+    if (step === 2) fieldsToValidate = ["date", "time"];
+    if (step === 3) fieldsToValidate = ["vehicle"];
 
-  const onSubmit = async (data: TaxiForm) => {
-    // Simulate API call to "Control Panel"
-    console.log("Submitting to Control Panel:", data);
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    nextStep(); // Go to success step
+    const isValid = await trigger(fieldsToValidate);
+    if (isValid) {
+      setStep(s => Math.min(s + 1, STEPS.length - 1));
+      setError(null);
+    }
   };
 
-  const containerVariants = {
-    hidden: { opacity: 0, x: 20 },
-    visible: { opacity: 1, x: 0 },
-    exit: { opacity: 0, x: -20 },
+  const prev = () => setStep(s => Math.max(s - 1, 0));
+
+  const selectedVehicle = VEHICLES.find(c => c.id === v.vehicle)!;
+  const total = selectedVehicle?.price || 0;
+
+  const onSubmit = async (data: FormData) => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch("https://suhail-scraper-api.onrender.com/api/create-booking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "taxi",
+          hotelName: `تكسي ${AIRPORTS.find(a => a.id === data.airport)?.name}`,
+          checkIn: data.date,
+          checkOut: data.date,
+          price: `${total.toLocaleString()} د.ع`,
+          passenger: { firstName: data.passengerName, lastName: data.phone },
+        }),
+      });
+
+      if (!response.ok) throw new Error("فشل في إرسال طلب الحجز. يرجى المحاولة لاحقاً.");
+
+      setStep(STEPS.indexOf("success"));
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message || "حدث خطأ غير متوقع");
+    }
+    setSubmitting(false);
   };
+
+  const anim = { hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -10 } };
 
   return (
-    <div className="w-full max-w-xl mx-auto overflow-hidden">
-      {/* Progress Bar */}
-      {currentStep < steps.length - 1 && (
-        <div className="flex justify-center gap-2 mb-8 px-4">
-          {steps.slice(0, -1).map((_, idx) => (
-            <div 
-              key={idx}
-              className={cn(
-                "h-1.5 rounded-full transition-all duration-500",
-                idx <= currentStep ? "w-8 bg-primary" : "w-2 bg-gray-200"
-              )}
-            />
+    <div className="w-full max-w-lg mx-auto">
+      {/* Simple Progress Bar */}
+      {step < STEPS.indexOf("success") && (
+        <div className="flex gap-1 mb-8">
+          {STEPS.slice(0, -1).map((_, i) => (
+            <div key={i} className={cn("h-1 rounded-full flex-1 transition-all", i <= step ? "bg-primary" : "bg-secondary")} />
           ))}
         </div>
       )}
 
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2 text-red-600 text-sm font-bold">
+          <AlertCircle className="w-4 h-4" />
+          {error}
+        </div>
+      )}
+
       <AnimatePresence mode="wait">
-        {/* STEP 0: Direction */}
-        {currentStep === 0 && (
-          <motion.div 
-            key="step0" 
-            variants={containerVariants} initial="hidden" animate="visible" exit="exit"
-            className="space-y-6"
-          >
+        {step === 0 && (
+          <motion.div key="s0" variants={anim} initial="hidden" animate="visible" exit="exit" className="space-y-6">
             <div className="text-center space-y-2">
-              <h2 className="text-2xl font-bold text-foreground">مرحباً بك في خدمة تكسي المطار</h2>
-              <p className="text-muted-foreground">حدد مسار رحلتك للبدء</p>
+              <h2 className="text-2xl font-black">حجز تكسي المطار</h2>
+              <p className="text-sm text-muted-foreground">اختر نوع الخدمة المطلوبة</p>
             </div>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <DirectionCard 
-                active={formValues.direction === "from-airport"}
-                onClick={() => { setValue("direction", "from-airport"); nextStep(); }}
-                icon={PlaneLanding}
-                title="من المطار"
-                subtitle="إلى منزلك"
-              />
-              <DirectionCard 
-                active={formValues.direction === "to-airport"}
-                onClick={() => { setValue("direction", "to-airport"); nextStep(); }}
-                icon={PlaneTakeoff}
-                title="إلى المطار"
-                subtitle="من منزلك"
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <button onClick={() => { setValue("direction", "from-airport"); validateAndNext(); }}
+                className={cn("p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all",
+                  v.direction === "from-airport" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50")}>
+                <PlaneLanding className="w-8 h-8 text-primary" />
+                <span className="font-bold">من المطار</span>
+              </button>
+              <button onClick={() => { setValue("direction", "to-airport"); validateAndNext(); }}
+                className={cn("p-6 rounded-3xl border-2 flex flex-col items-center gap-3 transition-all",
+                  v.direction === "to-airport" ? "border-primary bg-primary/5" : "border-border hover:border-primary/50")}>
+                <PlaneTakeoff className="w-8 h-8 text-primary" />
+                <span className="font-bold">إلى المطار</span>
+              </button>
             </div>
           </motion.div>
         )}
 
-        {/* STEP 1: Location */}
-        {currentStep === 1 && (
-          <motion.div 
-            key="step1" variants={containerVariants} initial="hidden" animate="visible" exit="exit"
-            className="space-y-6"
-          >
-            <StepHeader title="أين تقع وجهتك؟" subtitle="يرجى كتابة العنوان أو اسم المنطقة بدقة" icon={MapPin} />
-            <div className="space-y-4">
-              <div className="relative">
-                <MapPin className="absolute right-3 top-3 w-5 h-5 text-muted-foreground" />
-                <Input 
-                  {...register("location")}
-                  placeholder={formValues.direction === "from-airport" ? "العنوان المقصود (مثلاً: المنصور، شارع الأميرات)" : "موقع الانطلاق"}
-                  className="pr-10 h-14 rounded-2xl text-lg border-gray-200 focus:ring-primary shadow-sm"
-                />
+        {step === 1 && (
+          <motion.div key="s1" variants={anim} initial="hidden" animate="visible" exit="exit" className="space-y-5">
+            <h3 className="text-xl font-bold flex items-center gap-2"><MapPin className="w-5 h-5 text-primary" /> تفاصيل المسار</h3>
+            <div className="space-y-3">
+              <label className="text-sm font-bold">المطار</label>
+              <div className="grid grid-cols-1 gap-2">
+                {AIRPORTS.map(a => (
+                  <button key={a.id} type="button" onClick={() => setValue("airport", a.id)}
+                    className={cn("flex items-center justify-between p-4 rounded-2xl border-2 text-right transition-all",
+                      v.airport === a.id ? "border-primary bg-primary/5" : "border-border"
+                    )}>
+                    <span className="font-bold">{a.name}</span>
+                    {v.airport === a.id && <CheckCircle2 className="w-5 h-5 text-primary" />}
+                  </button>
+                ))}
               </div>
-              {errors.location && <p className="text-red-500 text-sm">{errors.location.message}</p>}
-              <Button onClick={nextStep} className="w-full h-14 rounded-2xl text-lg font-bold group">
-                استمرار
-                <ChevronLeft className="mr-2 group-hover:-translate-x-1 transition-transform" />
-              </Button>
-              <Button variant="ghost" onClick={prevStep} className="w-full">رجوع</Button>
+              {errors.airport && <p className="text-red-500 text-xs font-bold mr-1">{errors.airport.message}</p>}
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-bold">{v.direction === "from-airport" ? "عنوان التوصيل" : "عنوان الانطلاق"}</label>
+              <Input {...register("location")} placeholder="أدخل العنوان بالتفصيل..." className="h-12 rounded-xl" />
+              {errors.location && <p className="text-red-500 text-xs font-bold mr-1">{errors.location.message}</p>}
+            </div>
+            <NavButtons onNext={validateAndNext} onPrev={prev} />
           </motion.div>
         )}
 
-        {/* STEP 2: Date & Time */}
-        {currentStep === 2 && (
-          <motion.div 
-            key="step2" variants={containerVariants} initial="hidden" animate="visible" exit="exit"
-            className="space-y-6"
-          >
-            <StepHeader title="موعد الرحلة" subtitle="اختر الوقت والتاريخ المناسبين" icon={Clock} />
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {step === 2 && (
+          <motion.div key="s2" variants={anim} initial="hidden" animate="visible" exit="exit" className="space-y-5">
+            <h3 className="text-xl font-bold flex items-center gap-2"><Clock className="w-5 h-5 text-primary" /> موعد الرحلة</h3>
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium mr-1">التاريخ</label>
-                <div className="relative">
-                  <CalendarIcon className="absolute right-3 top-3.5 w-5 h-5 text-primary" />
-                  <Input type="date" {...register("date")} className="pr-10 h-12 rounded-xl" />
-                </div>
+                <label className="text-sm font-bold">التاريخ</label>
+                <Input type="date" {...register("date")} className="h-12 rounded-xl" />
+                {errors.date && <p className="text-red-500 text-xs font-bold mr-1">{errors.date.message}</p>}
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium mr-1">الوقت</label>
-                <div className="relative">
-                  <Clock className="absolute right-3 top-3.5 w-5 h-5 text-primary" />
-                  <Input type="time" {...register("time")} className="pr-10 h-12 rounded-xl" />
-                </div>
+                <label className="text-sm font-bold">الوقت</label>
+                <Input type="time" {...register("time")} className="h-12 rounded-xl" />
+                {errors.time && <p className="text-red-500 text-xs font-bold mr-1">{errors.time.message}</p>}
               </div>
             </div>
-            
-
-            <div className="space-y-3">
-              <Button onClick={nextStep} className="w-full h-14 rounded-2xl text-lg font-bold">التالي</Button>
-              <Button variant="ghost" onClick={prevStep} className="w-full">رجوع</Button>
+            <div className="space-y-2">
+              <label className="text-sm font-bold">رقم الرحلة (لتتبع الموعد)</label>
+              <Input {...register("flightNumber")} placeholder="مثال: IA-204" className="h-12 rounded-xl" />
             </div>
+            <NavButtons onNext={validateAndNext} onPrev={prev} />
           </motion.div>
         )}
 
-        {/* STEP 3: Car Type */}
-        {currentStep === 3 && (
-          <motion.div 
-            key="step3" variants={containerVariants} initial="hidden" animate="visible" exit="exit"
-            className="space-y-6"
-          >
-            <StepHeader title="اختر سيارتك" subtitle="مجموعة متنوعة تناسب احتياجاتك" icon={Car} />
-            
+        {step === 3 && (
+          <motion.div key="s3" variants={anim} initial="hidden" animate="visible" exit="exit" className="space-y-4">
+            <h3 className="text-xl font-bold">اختر نوع السيارة</h3>
             <div className="space-y-3">
-              {carTypes.map((car) => (
-                <CarCard 
-                  key={car.id}
-                  active={formValues.carType === car.id}
-                  onClick={() => setValue("carType", car.id)}
-                  car={car}
-                />
+              {VEHICLES.map(car => (
+                <button key={car.id} type="button" onClick={() => setValue("vehicle", car.id)}
+                  className={cn("w-full p-4 rounded-2xl border-2 flex items-center justify-between transition-all",
+                    v.vehicle === car.id ? "border-primary bg-primary/5" : "border-border")}>
+                  <div className="text-right">
+                    <p className="font-bold">{car.name}</p>
+                    <p className="text-xs text-muted-foreground">{car.desc}</p>
+                  </div>
+                  <p className="font-black text-primary">{car.price.toLocaleString()} د.ع</p>
+                </button>
               ))}
             </div>
-
-            <div className="space-y-3 pt-4">
-              <Button onClick={nextStep} className="w-full h-14 rounded-2xl text-lg font-bold">اختيار السيارة</Button>
-              <Button variant="ghost" onClick={prevStep} className="w-full">رجوع</Button>
-            </div>
+            {errors.vehicle && <p className="text-red-500 text-xs font-bold mr-1">{errors.vehicle.message}</p>}
+            <NavButtons onNext={validateAndNext} onPrev={prev} />
           </motion.div>
         )}
 
-        {/* STEP 4: Contact */}
-        {currentStep === 4 && (
-          <motion.div 
-            key="step4" variants={containerVariants} initial="hidden" animate="visible" exit="exit"
-            className="space-y-6"
-          >
-            <StepHeader title="تأكيد الحجز" subtitle="أدخل رقم هاتفك لنتواصل معك" icon={Phone} />
-            
-            <div className="space-y-4">
-              <div className="relative">
-                <Phone className="absolute right-3 top-3.5 w-5 h-5 text-muted-foreground" />
-                <Input 
-                  {...register("phone")}
-                  placeholder="07XXXXXXXX"
-                  className="pr-10 h-14 rounded-2xl text-xl font-bold tracking-widest text-center"
-                />
+        {step === 4 && (
+          <motion.div key="s4" variants={anim} initial="hidden" animate="visible" exit="exit" className="space-y-6">
+            <h3 className="text-xl font-bold">تأكيد الحجز</h3>
+            <div className="bg-secondary/30 p-5 rounded-3xl space-y-3">
+              <Row label="المطار" value={AIRPORTS.find(a => a.id === v.airport)?.name || "—"} />
+              <Row label="العنوان" value={v.location || "—"} />
+              <Row label="الموعد" value={`${v.date || "—"} ${v.time || "—"}`} />
+              <Row label="السيارة" value={selectedVehicle?.name || "—"} />
+              <div className="border-t pt-3 flex justify-between items-center font-black">
+                <span>الإجمالي</span>
+                <span className="text-primary text-xl">{total.toLocaleString()} د.ع</span>
               </div>
-              {errors.phone && <p className="text-red-500 text-sm text-center">{errors.phone.message}</p>}
-              
-              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">نوع السيارة</span>
-                  <span className="font-bold">{carTypes.find(c => c.id === formValues.carType)?.name}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">التاريخ والوقت</span>
-                  <span className="font-bold text-primary" dir="ltr">{formValues.date} | {formValues.time}</span>
-                </div>
-                <div className="pt-2 mt-2 border-t border-gray-200 flex justify-between items-center">
-                  <span className="text-lg font-bold">المجموع الكلي</span>
-                  <span className="text-xl font-black text-primary">{carTypes.find(c => c.id === formValues.carType)?.price.toLocaleString()} د.ع</span>
-                </div>
-              </div>
-
-              <Button onClick={handleSubmit(onSubmit)} className="w-full h-16 rounded-2xl text-xl font-black shadow-lg shadow-primary/20">
-                إتمام الحجز الآن
-              </Button>
-              <Button variant="ghost" onClick={prevStep} className="w-full">رجوع</Button>
             </div>
-          </motion.div>
-        )}
-
-        {/* STEP 5: Success */}
-        {currentStep === 5 && (
-          <motion.div 
-            key="step5" variants={containerVariants} initial="hidden" animate="visible" exit="exit"
-            className="text-center py-10 space-y-6"
-          >
-            <div className="relative inline-block">
-              <motion.div 
-                initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring", damping: 12 }}
-                className="w-24 h-24 rounded-full bg-green-500 flex items-center justify-center mx-auto"
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-bold mr-1 text-muted-foreground">الاسم الكامل</label>
+                <Input {...register("passengerName")} placeholder="الاسم الكامل" className="h-12 rounded-xl" />
+                {errors.passengerName && <p className="text-red-500 text-xs font-bold mr-1">{errors.passengerName.message}</p>}
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold mr-1 text-muted-foreground">رقم الهاتف</label>
+                <Input {...register("phone")} placeholder="رقم الهاتف" className="h-12 rounded-xl" />
+                {errors.phone && <p className="text-red-500 text-xs font-bold mr-1">{errors.phone.message}</p>}
+              </div>
+              <Button
+                onClick={handleSubmit(onSubmit)}
+                disabled={submitting}
+                className="w-full h-14 rounded-2xl text-lg font-bold mt-2"
               >
-                <CheckCircle2 className="w-12 h-12 text-white" />
-              </motion.div>
-              <motion.div 
-                animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0, 0.5] }}
-                transition={{ repeat: Infinity, duration: 2 }}
-                className="absolute inset-0 rounded-full border-4 border-green-500/30"
-              />
+                {submitting ? "جاري الإرسال..." : "تأكيد الحجز الآن"}
+              </Button>
             </div>
-            
-            <div className="space-y-2">
-              <h2 className="text-2xl font-black text-foreground">تم الحجز بنجاح!</h2>
-              <p className="text-muted-foreground max-w-[280px] mx-auto">
-                شكراً لاختيارك سهيل. تم إرسال معلوماتك إلى لوحة التحكم، وسنتصل بك قريباً لتأكيد الموعد.
-              </p>
+            <Button variant="ghost" onClick={prev} className="w-full">رجوع</Button>
+          </motion.div>
+        )}
+
+        {step === 5 && (
+          <motion.div key="s5" variants={anim} initial="hidden" animate="visible" exit="exit" className="text-center py-10 space-y-4">
+            <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center mx-auto text-white">
+              <CheckCircle2 className="w-10 h-10" />
             </div>
-            
-            <Button 
-              variant="outline" 
-              onClick={() => window.location.href = "/home"}
-              className="h-12 rounded-xl px-10"
-            >
-              العودة للرئيسية
-            </Button>
+            <h2 className="text-2xl font-black">تم الحجز بنجاح!</h2>
+            <p className="text-muted-foreground">سنتواصل معك قريباً لتأكيد موعد السائق.</p>
+            <Button onClick={() => window.location.href = "/home"} className="px-10 rounded-xl">العودة للرئيسية</Button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -287,76 +267,21 @@ export default function AirportTaxiModule() {
   );
 }
 
-// --- Helper Components ---
-
-function DirectionCard({ active, onClick, icon: Icon, title, subtitle }: any) {
+function NavButtons({ onNext, onPrev }: { onNext: () => void; onPrev: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "relative p-6 rounded-3xl border-2 transition-all duration-300 flex flex-col items-center gap-3 group overflow-hidden",
-        active 
-          ? "border-primary bg-primary/5 shadow-md scale-[1.02]" 
-          : "border-gray-100 bg-white hover:border-primary/30"
-      )}
-    >
-      <div className={cn(
-        "w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-300",
-        active ? "bg-primary text-white" : "bg-gray-100 text-gray-500 group-hover:scale-110"
-      )}>
-        <Icon className="w-8 h-8" />
-      </div>
-      <div className="text-center">
-        <p className={cn("font-black text-lg", active ? "text-primary" : "text-gray-700")}>{title}</p>
-        <p className="text-xs text-muted-foreground">{subtitle}</p>
-      </div>
-      {active && (
-        <motion.div layoutId="check" className="absolute top-2 left-2 text-primary">
-          <CheckCircle2 className="w-5 h-5" />
-        </motion.div>
-      )}
-    </button>
-  );
-}
-
-function StepHeader({ title, subtitle, icon: Icon }: any) {
-  return (
-    <div className="text-center space-y-2 mb-6">
-      <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-3">
-        <Icon className="w-7 h-7 text-primary" />
-      </div>
-      <h2 className="text-2xl font-black text-foreground">{title}</h2>
-      <p className="text-muted-foreground">{subtitle}</p>
+    <div className="flex gap-2 pt-4">
+      <Button variant="outline" type="button" onClick={onPrev} className="flex-1 h-12 rounded-xl">رجوع</Button>
+      <Button type="button" onClick={onNext} className="flex-[2] h-12 rounded-xl">استمرار</Button>
     </div>
   );
 }
 
-function CarCard({ car, active, onClick }: any) {
+function Row({ label, value }: { label: string; value: string }) {
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "w-full p-4 rounded-2xl border-2 flex items-center gap-4 transition-all duration-300 text-right group relative",
-        active 
-          ? "border-primary bg-primary/5 shadow-md" 
-          : "border-gray-100 bg-white hover:border-primary/20"
-      )}
-    >
-      <div className="text-3xl lg:text-4xl grayscale-[0.5] group-hover:grayscale-0 transition-all duration-300">
-        {car.image}
-      </div>
-      <div className="flex-1">
-        <div className="flex justify-between items-start">
-          <h4 className={cn("font-bold text-lg", active ? "text-primary" : "text-gray-800")}>{car.name}</h4>
-          <span className="font-black text-primary" dir="ltr">{car.price.toLocaleString()} د.ع</span>
-        </div>
-        <p className="text-xs text-muted-foreground">{car.description}</p>
-      </div>
-      {active && (
-        <motion.div layoutId="carCheck" className="mr-2 text-primary">
-          <CheckCircle2 className="w-6 h-6" />
-        </motion.div>
-      )}
-    </button>
+    <div className="flex justify-between text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-bold">{value}</span>
+    </div>
   );
 }
+

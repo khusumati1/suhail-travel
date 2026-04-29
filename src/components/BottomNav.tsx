@@ -14,9 +14,9 @@ const BottomNav = () => {
   const navigate = useNavigate();
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-50 flex justify-center">
-      <div className="w-full max-w-md bg-card/95 backdrop-blur-md border-t border-border pb-[env(safe-area-inset-bottom)]">
-        <div className="flex items-center justify-around py-2 px-4" dir="rtl">
+    <div className="flex justify-center">
+      <div className="floating-island max-w-md mx-auto" dir="rtl">
+        <div className="flex items-center justify-around">
           {tabs.map((tab) => {
             const isActive = location.pathname === tab.path;
             const Icon = tab.icon;
@@ -24,24 +24,24 @@ const BottomNav = () => {
               <button
                 key={tab.path}
                 onClick={() => navigate(tab.path)}
-                className="relative flex flex-col items-center gap-0.5 py-2 px-4 rounded-2xl transition-all duration-200"
+                className="relative flex flex-col items-center justify-center w-16 h-14 rounded-[2rem] transition-all duration-300 active:scale-90"
               >
                 {isActive && (
                   <motion.div
                     layoutId="navIndicator"
-                    className="absolute -top-1 w-8 h-1 rounded-full bg-primary"
-                    transition={{ type: "spring", stiffness: 500, damping: 35 }}
+                    className="absolute inset-0 bg-primary/10 rounded-2xl"
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
                   />
                 )}
                 <Icon
-                  className={`h-[22px] w-[22px] transition-colors duration-200 ${
-                    isActive ? "text-primary" : "text-muted-foreground"
+                  className={`h-6 w-6 transition-all duration-300 ${
+                    isActive ? "text-primary scale-110" : "text-muted-foreground/60"
                   }`}
-                  strokeWidth={isActive ? 2.2 : 1.8}
+                  strokeWidth={isActive ? 2.5 : 2}
                 />
                 <span
-                  className={`text-[10px] font-semibold transition-colors duration-200 ${
-                    isActive ? "text-primary" : "text-muted-foreground"
+                  className={`text-[9px] font-black mt-1 transition-all duration-300 ${
+                    isActive ? "text-primary opacity-100" : "text-muted-foreground/40"
                   }`}
                 >
                   {tab.label}

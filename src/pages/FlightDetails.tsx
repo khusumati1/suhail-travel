@@ -3,7 +3,9 @@ import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { ArrowRight, Plane, Luggage, Utensils, Wifi, Armchair, Clock, Info, Shield, CheckCircle2, QrCode, Loader2 } from "lucide-react";
 import DesktopPageLayout from "@/components/DesktopPageLayout";
+import { getPlaceholder } from "@/utils/imagePlaceholder"; // Replaced Unsplash URL with placeholder
 import { useIsMobile } from "@/hooks/use-mobile";
+
 import AuthModal from "@/components/AuthModal";
 import { useAuthGate } from "@/hooks/useAuthGate";
 import { useAuth } from "@/hooks/useAuth";
@@ -201,7 +203,7 @@ const FlightDetails = () => {
       <DesktopPageLayout
         title="تفاصيل الحجز"
         subtitle={`${flight.airline} — ${flight.flightNum}`}
-        heroImage="https://images.unsplash.com/photo-1436491865332-7a61a109db05?w=1400&h=300&fit=crop"
+        heroImage={getPlaceholder(1400,300)} // Replaced Unsplash URL with placeholder
       >
         <div className="max-w-5xl mx-auto">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

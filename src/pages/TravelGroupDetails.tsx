@@ -4,6 +4,7 @@ import { motion, useScroll, useTransform } from "framer-motion";
 import { ArrowRight, Users, CalendarDays, Star, Check, MapPin, Shield, Clock, Heart, Camera, Utensils, Bus, Plane, ChevronLeft, Award } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import DesktopPageLayout from "@/components/DesktopPageLayout";
+import { getPlaceholder } from "@/utils/imagePlaceholder"; // Replaced Unsplash URL with placeholder
 
 const itinerary = [
   { day: "اليوم ١", title: "الوصول إلى إسطنبول", desc: "استقبال في المطار ونقل للفندق، جولة مسائية في ميدان تقسيم", icon: Plane },
@@ -16,11 +17,11 @@ const itinerary = [
 ];
 
 const gallery = [
-  { src: "https://images.unsplash.com/photo-1524231757912-21f4fe3a7200?w=600&h=500&fit=crop", label: "آيا صوفيا" },
-  { src: "https://images.unsplash.com/photo-1541432901042-2d8bd64b4a9b?w=600&h=500&fit=crop", label: "مضيق البوسفور" },
-  { src: "https://images.unsplash.com/photo-1572204097183-e1ab140342ed?w=600&h=500&fit=crop", label: "المسجد الأزرق" },
-  { src: "https://images.unsplash.com/photo-1604941582648-2e7528c80e9a?w=600&h=500&fit=crop", label: "البازار الكبير" },
-  { src: "https://images.unsplash.com/photo-1549918864-48ac978761a4?w=600&h=500&fit=crop", label: "برج غلطة" },
+  { src: getPlaceholder(600,500), label: "آيا صوفيا" }, // Replaced Unsplash URL with placeholder
+  { src: getPlaceholder(600,500), label: "مضيق البوسفور" }, // Replaced Unsplash URL with placeholder
+  { src: getPlaceholder(600,500), label: "المسجد الأزرق" }, // Replaced Unsplash URL with placeholder
+  { src: getPlaceholder(600,500), label: "البازار الكبير" }, // Replaced Unsplash URL with placeholder
+  { src: getPlaceholder(600,500), label: "برج غلطة" }, // Replaced Unsplash URL with placeholder
 ];
 
 const ParallaxGalleryCard = ({ item, index }: { item: typeof gallery[0]; index: number }) => {
@@ -77,11 +78,11 @@ const TravelGroupDetails = () => {
         title="رحلة إسطنبول الجماعية"
         subtitle="٧ أيام من المغامرة مع مرشد عربي متخصص"
         heroImages={[
-          "https://images.unsplash.com/photo-1524231757912-21f4fe3a7200?w=1920&h=600&fit=crop&q=85",
-          "https://images.unsplash.com/photo-1541432901042-2d8bd64b4a9b?w=1920&h=600&fit=crop&q=85",
-          "https://images.unsplash.com/photo-1572204097183-e1ab140342ed?w=1920&h=600&fit=crop&q=85",
-          "https://images.unsplash.com/photo-1604941582648-2e7528c80e9a?w=1920&h=600&fit=crop&q=85",
-          "https://images.unsplash.com/photo-1549918864-48ac978761a4?w=1920&h=600&fit=crop&q=85",
+          getPlaceholder(1920,600), // Replaced Unsplash URL with placeholder
+          getPlaceholder(1920,600), // Replaced Unsplash URL with placeholder
+          getPlaceholder(1920,600), // Replaced Unsplash URL with placeholder
+          getPlaceholder(1920,600), // Replaced Unsplash URL with placeholder
+          getPlaceholder(1920,600), // Replaced Unsplash URL with placeholder
         ]}
       >
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -281,7 +282,7 @@ const TravelGroupDetails = () => {
     <div className="mobile-container bg-background pb-28">
       <div className="relative">
         <img
-          src="https://images.unsplash.com/photo-1539768942893-daf53e736b68?w=600&h=350&fit=crop"
+          src={getPlaceholder(600,350)} // Replaced Unsplash URL with placeholder
           alt="Travel Group"
           className="w-full h-56 object-cover"
         />

@@ -162,6 +162,18 @@
       0 8px 20px -8px hsla(262, 80%, 35%, 0.2);
   }
 
+  .shadow-native {
+    box-shadow: 
+      0 0 0 1px rgba(0,0,0,0.02),
+      0 4px 6px rgba(0,0,0,0.04),
+      0 12px 24px rgba(0,0,0,0.08);
+  }
+
+  .shadow-glass {
+    box-shadow: 
+      0 8px 32px 0 rgba(31, 38, 135, 0.07);
+  }
+
   .shadow-card {
     box-shadow:
       0 1px 3px hsla(250, 20%, 15%, 0.04),
@@ -180,6 +192,10 @@
 
   .shadow-glow {
     box-shadow: 0 0 40px 8px hsla(262, 80%, 55%, 0.15);
+  }
+
+  .floating-island {
+    @apply fixed bottom-6 left-4 right-4 z-50 glass rounded-[2.5rem] shadow-native border border-white/20 p-2;
   }
 
   .mobile-container {

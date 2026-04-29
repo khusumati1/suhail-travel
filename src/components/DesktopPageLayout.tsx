@@ -3,8 +3,9 @@ import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Phone, Mail, MapPin, ChevronLeft, Home } from "lucide-react";
 import logo from "@/assets/logo.png";
-import OptimizedImage from "@/components/OptimizedImage";
+import { getPlaceholder } from "@/utils/imagePlaceholder"; // Replaced Unsplash URL with placeholder
 import ThemeToggle from "@/components/ThemeToggle";
+import OptimizedImage from "@/components/OptimizedImage"; // Imported for hero placeholder
 
 interface DesktopPageLayoutProps {
   children: React.ReactNode;
@@ -138,7 +139,7 @@ const DesktopPageLayout = ({ children, title, subtitle, heroImage, heroImages }:
               className="absolute inset-0"
             >
               <OptimizedImage
-                src={heroImage || "https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?w=1400&h=300&fit=crop"}
+                src={heroImage || getPlaceholder(1400,300)} // Replaced Unsplash URL with placeholder
                 alt=""
                 className="w-full h-full object-cover"
                 wrapperClassName="w-full h-full"

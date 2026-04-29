@@ -56,6 +56,11 @@ export interface NormalizedOffer {
   // ── Internal (stripped before response) ──
   _carrierCode?: string;
   _rawOffer?: any;             // Raw Amadeus offer for Pricing API
+  _recoveryScore?: "exact" | "relaxed" | "recovered";
+  _recoveryConfidence?: number; // 0.0 – 1.0
+  _recoveryReason?: string;
+  _isOriginalRoute?: boolean;
+  _isOriginalDate?: boolean;
   label?: "cheapest" | "fastest" | "best";
 }
 

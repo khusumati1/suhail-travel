@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from "react";
+import { getPlaceholder } from "@/utils/imagePlaceholder"; // Replaced Unsplash URL with placeholder
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence, useScroll, useTransform } from "framer-motion";
 import {
   Plane, Building2, Globe, Users, Search, MapPin, Star,
   ArrowLeftRight, CalendarDays, ChevronLeft, ChevronRight,
   Phone, Mail, Shield, Award, Heart, Clock, Sparkles, User,
-  TrendingUp, Zap, ArrowUpLeft,
+  TrendingUp, Zap, ArrowUpLeft, Car, Smartphone,
 } from "lucide-react";
 import logo from "@/assets/logo.png";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -17,21 +18,21 @@ import FlightBookingModule from "@/components/FlightBookingModule";
 
 const heroSlides = [
   {
-    image: "https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?w=1400&h=600&fit=crop",
+    image: getPlaceholder(1400,600), // Replaced Unsplash URL with placeholder
     title: "اكتشف العالم مع سهيل",
     subtitle: "أفضل عروض الطيران والفنادق من العراق إلى العالم",
     cta: "احجز رحلتك الآن",
     badge: "عروض حصرية",
   },
   {
-    image: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1400&h=600&fit=crop",
+    image: getPlaceholder(1400,600), // Replaced Unsplash URL with placeholder
     title: "فنادق فاخرة بأسعار مميزة",
     subtitle: "أكثر من ١٠٠ ألف فندق حول العالم بتقييمات موثوقة",
     cta: "تصفح الفنادق",
     badge: "خصم ٤٠٪",
   },
   {
-    image: "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?w=1400&h=600&fit=crop",
+    image: getPlaceholder(1400,600), // Replaced Unsplash URL with placeholder
     title: "مجموعات سفر حصرية",
     subtitle: "انضم لرحلات جماعية مع مرشدين عرب متخصصين",
     cta: "استعرض المجموعات",
@@ -40,12 +41,12 @@ const heroSlides = [
 ];
 
 const destinations = [
-  { name: "إسطنبول", country: "تركيا", image: "https://images.unsplash.com/photo-1524231757912-21f4fe3a7200?w=400&h=500&fit=crop", price: "٣٥٠", flag: "🇹🇷", flights: "١٢ رحلة يومياً" },
-  { name: "دبي", country: "الإمارات", image: "https://images.unsplash.com/photo-1512453979798-5ea266f8880c?w=400&h=500&fit=crop", price: "٢٨٠", flag: "🇦🇪", flights: "٨ رحلات يومياً" },
-  { name: "القاهرة", country: "مصر", image: "https://images.unsplash.com/photo-1572252009286-268acec5ca0a?w=400&h=500&fit=crop", price: "٢٢٠", flag: "🇪🇬", flights: "٥ رحلات يومياً" },
-  { name: "كوالالمبور", country: "ماليزيا", image: "https://images.unsplash.com/photo-1596422846543-75c6fc197f07?w=400&h=500&fit=crop", price: "٤٥٠", flag: "🇲🇾", flights: "٣ رحلات أسبوعياً" },
-  { name: "بيروت", country: "لبنان", image: "https://images.unsplash.com/photo-1520175480921-4edfa2983e0f?w=400&h=500&fit=crop", price: "١٩٠", flag: "🇱🇧", flights: "٤ رحلات يومياً" },
-  { name: "لندن", country: "بريطانيا", image: "https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?w=400&h=500&fit=crop", price: "٦٥٠", flag: "🇬🇧", flights: "رحلتان يومياً" },
+  { name: "إسطنبول", country: "تركيا", image: getPlaceholder(400,500), price: "٣٥٠", flag: "🇹🇷", flights: "١٢ رحلة يوميًا" }, // Replaced Unsplash
+  { name: "دبي", country: "الإمارات", image: getPlaceholder(400,500), price: "٢٨٠", flag: "🇦🇪", flights: "٨ رحلات يوميًا" }, // Replaced Unsplash
+  { name: "القاهرة", country: "مصر", image: getPlaceholder(400,500), price: "٢٢٠", flag: "🇪🇬", flights: "٥ رحلات يوميًا" }, // Replaced Unsplash
+  { name: "كوالالمبور", country: "ماليزيا", image: getPlaceholder(400,500), price: "٤٥٠", flag: "🇲🇾", flights: "٣ رحلات أسبوعيًا" }, // Replaced Unsplash
+  { name: "بيروت", country: "لبنان", image: getPlaceholder(400,500), price: "١٩٠", flag: "🇱🇧", flights: "٤ رحلات يوميًا" }, // Replaced Unsplash
+  { name: "لندن", country: "بريطانيا", image: getPlaceholder(400,500), price: "٦٥٠", flag: "🇬🇧", flights: "رحلتان يوميًا" }, // Replaced Unsplash
 ];
 
 const topHotels = [
@@ -196,6 +197,13 @@ const DesktopHomeLayout = () => {
                 الطيران
                 <span className="absolute -bottom-1 right-0 w-0 h-0.5 bg-primary group-hover:w-full transition-all duration-300" />
               </button>
+              <button onClick={() => navigate("/taxi")} className="hover:text-primary transition-colors relative group">
+                تكسي المطار
+                <span className="absolute -bottom-1 right-0 w-0 h-0.5 bg-primary group-hover:w-full transition-all duration-300" />
+              </button>
+              <button disabled className="text-muted-foreground/50 flex items-center gap-1 cursor-not-allowed">
+                <Smartphone className="w-4 h-4" /> eSIM
+              </button>
             </div>
             <div className="flex items-center gap-3 cursor-pointer group" onClick={() => navigate("/home")}>
               <h1 className="text-xl font-bold text-primary group-hover:opacity-80 transition-opacity">سهيل</h1>
@@ -342,7 +350,8 @@ const DesktopHomeLayout = () => {
               { id: "flights", icon: Plane, label: "طيران" },
               { id: "hotels", icon: Building2, label: "فنادق" },
               { id: "visa", icon: Globe, label: "تأشيرات" },
-              { id: "groups", icon: Users, label: "مجموعات" },
+              { id: "taxi", icon: Car, label: "تكسي المطار" },
+              { id: "esim", icon: Smartphone, label: "eSIM", locked: true },
             ].map((tab) => {
               const Icon = tab.icon;
               return (
@@ -358,6 +367,7 @@ const DesktopHomeLayout = () => {
                   )}
                   <Icon className="w-4 h-4 relative z-10" strokeWidth={1.8} />
                   <span className="relative z-10">{tab.label}</span>
+                  {tab.locked && <Sparkles className="w-3 h-3 relative z-10 text-accent" />}
                 </button>
               );
             })}
@@ -397,15 +407,25 @@ const DesktopHomeLayout = () => {
             </div>
           )}
 
-          {(activeTab === "visa" || activeTab === "groups") && (
+          {(activeTab === "visa" || activeTab === "taxi") && (
             <div className="flex justify-center">
               <button
-                onClick={() => navigate(activeTab === "visa" ? "/visa" : "/groups/1")}
+                onClick={() => navigate(activeTab === "visa" ? "/visa" : "/taxi")}
                 className="bg-primary text-primary-foreground font-bold px-12 py-3.5 rounded-xl flex items-center gap-2 hover:shadow-premium hover:scale-[1.02] transition-all"
               >
                 <Sparkles className="w-5 h-5" />
-                استعراض {activeTab === "visa" ? "التأشيرات المتاحة" : "كروبات سياحية"}
+                استعراض {activeTab === "visa" ? "التأشيرات المتاحة" : "تكسي المطار"}
               </button>
+            </div>
+          )}
+
+          {activeTab === "esim" && (
+            <div className="flex flex-col items-center justify-center py-4">
+              <div className="w-16 h-16 bg-secondary rounded-full flex items-center justify-center mb-4">
+                <Smartphone className="w-8 h-8 text-muted-foreground opacity-30" />
+              </div>
+              <p className="text-lg font-bold text-foreground">قريباً: خدمات eSIM العالمية</p>
+              <p className="text-sm text-muted-foreground mt-2">نحن نعمل على توفير باقات انترنت عالمية بأفضل الأسعار.</p>
             </div>
           )}
         </motion.div>

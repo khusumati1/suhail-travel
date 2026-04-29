@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { ArrowRight, Clock, FileCheck, Filter, ArrowUpDown, Globe, Sparkles, Shield, ChevronLeft, Plane, CheckCircle2 } from "lucide-react";
 import BottomNav from "@/components/BottomNav";
 import DesktopPageLayout from "@/components/DesktopPageLayout";
+import { getPlaceholder } from "@/utils/imagePlaceholder"; // Imported for placeholder usage
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const countries: { id: number; name: string; flag: string; type: string; duration: string; processing: string; price: string; popular: boolean; image: string; requirements: string[] }[] = [];
@@ -136,7 +137,7 @@ const VisaList = () => {
       <DesktopPageLayout
         title="التأشيرات"
         subtitle={`${countries.length} دول متاحة للمواطنين العراقيين`}
-        heroImage="https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?w=1400&h=300&fit=crop"
+        heroImage={getPlaceholder(1400,300)} // Replaced Unsplash URL with placeholder
       >
         {/* Stats */}
         <div className="grid grid-cols-3 gap-4 mb-10">

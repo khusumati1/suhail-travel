@@ -29,20 +29,49 @@ export const SLO_DEFINITIONS: SLODefinition[] = [
 
 interface SLIEvent {
   ts: number;
-  metric: 'search_success' | 'booking_success' | 'price_accuracy';
+  metric: 'search_success' | 'booking_success' | 'price_accuracy' | 'search_recovered';
   good: boolean;      // true = good event, false = bad event
   latencyMs?: number;
+  meta?: any;
 }
 
 const MAX_EVENTS = 10_000;
 const sliEvents: SLIEvent[] = [];
 
-export function recordSLI(metric: SLIEvent['metric'], good: boolean, latencyMs?: number): void {
-  sliEvents.push({ ts: Date.now(), metric, good, latencyMs });
+export function recordSLI(metric: SLIEvent['metric'], good: boolean, latencyMs?: number, meta?: any): void {
+  sliEvents.push({ ts: Date.now(), metric, good, latencyMs, meta });
   // Trim oldest events beyond cap
   if (sliEvents.length > MAX_EVENTS) {
     sliEvents.splice(0, sliEvents.length - MAX_EVENTS);
   }
+}
+
+/** Record recovery-specific analytics */
+export function recordRecoveryEvent(type: string, confidence: number): void {
+  recordSLI('search_recovered', true, 0, { type, confidence });
+}
+
+export function getRecoveryStats(windowMs: number = 86_400_000) {
+  const cutoff = Date.now() - windowMs;
+  const events = sliEvents.filter(e => e.metric === 'search_recovered' && e.ts > cutoff);
+  const searchEvents = sliEvents.filter(e => e.metric === 'search_success' && e.ts > cutoff);
+
+  const totalSearches = searchEvents.length;
+  const totalRecovered = events.filter(e => e.meta?.type !== 'exact').length;
+
+  const typeCounts: Record<string, number> = {};
+  events.forEach(e => {
+    const t = e.meta?.type || 'unknown';
+    typeCounts[t] = (typeCounts[t] || 0) + 1;
+  });
+
+  return {
+    total_searches: totalSearches,
+    total_recovered: totalRecovered,
+    recovery_rate: totalSearches > 0 ? (totalRecovered / totalSearches) * 100 : 0,
+    breakdown: typeCounts,
+    avg_confidence: events.length > 0 ? events.reduce((s, e) => s + (e.meta?.confidence || 0), 0) / events.length : 0,
+  };
 }
 
 function getSLIInWindow(metric: string, windowMs: number): { good: number; total: number; ratio: number } {
@@ -521,6 +550,7 @@ export function generateReliabilityReport() {
   const resilience = computeResilienceScore();
   const providerRisk = computeProviderRiskScores();
   const sampling = getSamplingStatus();
+  const recovery = getRecoveryStats();
 
   // Weekly burn summary
   const weeklyBurn = budgets.map(b => ({
@@ -541,6 +571,7 @@ export function generateReliabilityReport() {
     error_budgets: budgets,
     provider_risk: providerRisk,
     trace_sampling: sampling,
+    recovery_analytics: recovery,
     last_load_test: lastLoadTestResult ? {
       test_id: lastLoadTestResult.test_id,
       success_rate: lastLoadTestResult.results.success_rate,

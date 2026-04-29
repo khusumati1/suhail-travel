@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import BottomNav from "@/components/BottomNav";
 import DesktopPageLayout from "@/components/DesktopPageLayout";
+import { getPlaceholder } from "@/utils/imagePlaceholder"; // Replaced Unsplash URL with placeholder
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useCarSearch, CarResult, CarDestination } from "@/hooks/useCarSearch";
 import { useState, useEffect, useRef } from "react";
@@ -420,7 +421,7 @@ const CarRentals = () => {
       <DesktopPageLayout
         title="تأجير السيارات"
         subtitle="قارن أسعار تأجير السيارات من أفضل الشركات"
-        heroImage="https://images.unsplash.com/photo-1449965408869-ebd3fee0cbb7?w=1400&h=300&fit=crop"
+        heroImage={getPlaceholder(1400,300)} // Replaced Unsplash URL with placeholder
       >
         <CarSearchForm {...formProps} />
         <CarResults {...resultsProps} />

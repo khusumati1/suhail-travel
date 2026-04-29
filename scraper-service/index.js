@@ -34,7 +34,9 @@ class BrowserManager {
   constructor() {
     this.browser = null;
     this.pages = [];
-    this.poolSize = 3;
+    // 🔴 FIX 1: تم تقليل العدد إلى 1 لمنع انهيار الذاكرة (OOM) أثناء الإقلاع على Render.
+    // يمكنك زيادته لاحقاً إذا قمت بترقية باقة الخادم.
+    this.poolSize = 1;
     this.currentToken = 'It2AoD8T7rZ_Pb5bHUxet'; // Fallback
     this.isRefreshing = false;
     this.ready = new Promise(resolve => this.resolveReady = resolve);
@@ -45,8 +47,17 @@ class BrowserManager {
     try {
       console.log('[Extreme Speed] Initializing Warm Page Pool...');
       this.browser = await puppeteer.launch({
-        headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        // 🔴 FIX 2: التحديث للصيغة المعيارية الجديدة وإضافة الأعلام الضرورية جداً لبيئة Render
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--no-zygote',       // يمنع إنشاء عمليات فرعية زائدة تستهلك الذاكرة
+          '--single-process',  // يجبر المتصفح على العمل في عملية واحدة (مهم جداً لسيرفرات لينكس المقيدة)
+          '--window-size=1280,800' // يمنع بعض مشاكل العرض الوهمي
+        ]
       });
 
       for (let i = 0; i < this.poolSize; i++) {
@@ -77,8 +88,8 @@ class BrowserManager {
         token = await worker.evaluate(() => {
           try {
             // Priority: localStorage -> Cookies -> auth object
-            const t = localStorage.getItem('token') || 
-                      JSON.parse(localStorage.getItem('auth') || '{}')?.token;
+            const t = localStorage.getItem('token') ||
+              JSON.parse(localStorage.getItem('auth') || '{}')?.token;
             if (t) return t;
             // Fallback: try to find it in a cookie (less likely but possible)
             const cookieToken = document.cookie.split('; ').find(row => row.startsWith('token='))?.split('=')[1];
@@ -88,7 +99,7 @@ class BrowserManager {
         if (token) break;
         await wait(500);
       }
-      
+
       if (token) {
         this.currentToken = token;
         api.defaults.headers['accept-token'] = token; // Update axios instance too
@@ -165,9 +176,9 @@ const executeFetchInPage = async (page, path, options = {}) => {
     const result = await page.evaluate(async (url, fetchOptions) => {
       let token = 'It2AoD8T7rZ_Pb5bHUxet';
       try {
-        token = localStorage.getItem('token') || 
-                JSON.parse(localStorage.getItem('auth') || '{}')?.token || 
-                token;
+        token = localStorage.getItem('token') ||
+          JSON.parse(localStorage.getItem('auth') || '{}')?.token ||
+          token;
       } catch (e) { /* Access Denied */ }
 
       const headers = {
@@ -199,7 +210,7 @@ const resolveCityId = async (cityName, page) => {
     const url = `v2/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`;
     const data = await executeFetchInPage(page, url);
     const suggestions = data?.result || data || [];
-    
+
     const cityMatch = suggestions.find(s => s.type === 'CITY' || s.type === 'City') || suggestions[0];
 
     if (cityMatch) {
@@ -237,30 +248,19 @@ const CANONICAL_CITY_MAP = {
   "دهوك": { cityName: "Duhok", cityId: 3488, countryId: 17 }
 };
 
-const CITY_ID_EXCLUSIONS = {
-  3483: ["erbil", "أربيل", "اربيل", "basra", "البصرة", "sulaymaniyah", "السليمانية", "najaf", "النجف", "karbala", "كربلاء", "duhok", "دهوك"], // Baghdad
-  3484: ["erbil", "أربيل", "اربيل", "baghdad", "بغداد", "sulaymaniyah", "السليمانية", "najaf", "النجف", "karbala", "كربلاء", "duhok", "دهوك"], // Basra
-  3482: ["baghdad", "بغداد", "basra", "البصرة", "najaf", "النجف", "karbala", "كربلاء"], // Erbil
-  3489: ["erbil", "أربيل", "اربيل", "baghdad", "بغداد", "basra", "البصرة", "sulaymaniyah", "السليمانية", "duhok", "دهوك"], // Najaf
-  3486: ["erbil", "أربيل", "اربيل", "baghdad", "بغداد", "basra", "البصرة", "sulaymaniyah", "السليمانية", "duhok", "دهوك"], // Karbala
-  3487: ["baghdad", "بغداد", "basra", "البصرة", "najaf", "النجف", "karbala", "كربلاء"], // Sulaymaniyah
-  3488: ["baghdad", "بغداد", "basra", "البصرة", "najaf", "النجف", "karbala", "كربلاء"] // Duhok
-};
-
-const DYNAMIC_CITY_CACHE = new Map();
 // ==========================================
-// 3. Endpoint 1: POST /api/scrape-hotels (The Search/PLP)
+// 3. Endpoint 1: POST /api/scrape-hotels
 // ==========================================
 app.post('/api/scrape-hotels', async (req, res) => {
   try {
     let { cityName, cityId, countryId, checkIn, checkOut, adultsCount = 2, childrenAges = [] } = req.body;
     const cacheKey = `hotels-${cityId}-${checkIn}-${checkOut}-${adultsCount}`;
-    
+
     // 1. Memory Cache Check
     const localCached = SMART_CACHE.get('hotels', cacheKey);
     if (localCached) return res.json({ success: true, data: { hotels: localCached } });
 
-    // 2. Supabase Cache Check (Persistent Memory)
+    // 2. Supabase Cache Check
     try {
       const { data: sbCached } = await supabase.from('search_cache').select('data').eq('key', cacheKey).single();
       if (sbCached) {
@@ -271,7 +271,6 @@ app.post('/api/scrape-hotels', async (req, res) => {
 
     console.log(`[Speed Mode] Rapid Hotel Fetch: ${cityName}`);
 
-    // Force Override for known cities (Consistency check)
     const normalizedName = cityName.toLowerCase().trim();
     if (CANONICAL_CITY_MAP[normalizedName]) {
       const canonical = CANONICAL_CITY_MAP[normalizedName];
@@ -281,11 +280,11 @@ app.post('/api/scrape-hotels', async (req, res) => {
     }
 
     const startPayload = {
-      cityName, 
-      cityId: Number(cityId), 
+      cityName,
+      cityId: Number(cityId),
       countryId: Number(countryId || 17),
-      checkIn: checkIn.split('T')[0], 
-      checkOut: checkOut.split('T')[0], 
+      checkIn: checkIn.split('T')[0],
+      checkOut: checkOut.split('T')[0],
       rooms: [{ adultsCount: Number(adultsCount), childrenAges }]
     };
 
@@ -301,16 +300,14 @@ app.post('/api/scrape-hotels', async (req, res) => {
       }
     };
 
-    // Phase 1: Try Direct
     sid = await attemptSearch(startPayload);
 
-    // Phase 2: If Direct fails or ID is suspicious, resolve dynamically
     if (!sid) {
       console.warn(`[Hotel] Resolving City ID dynamically for ${cityName}...`);
       const resolved = await browserManager.exec(async (page) => {
         return await resolveCityId(cityName, page);
       });
-      
+
       if (resolved && resolved.cityId !== Number(cityId)) {
         console.log(`[Hotel] Corrected City ID for ${cityName}: ${cityId} -> ${resolved.cityId}`);
         startPayload.cityId = Number(resolved.cityId);
@@ -319,7 +316,6 @@ app.post('/api/scrape-hotels', async (req, res) => {
       }
     }
 
-    // Phase 3: Browser Fallback (Nuclear Option)
     if (!sid) {
       console.log(`[Hotel] Falling back to Browser Execution for ${cityName}...`);
       try {
@@ -337,7 +333,6 @@ app.post('/api/scrape-hotels', async (req, res) => {
 
     if (!sid) throw new Error('Could not obtain searchSessionId from any source.');
 
-    // Extreme Speed Polling (100ms Pulse)
     let hotels = [];
     const startTime = Date.now();
     for (let i = 0; i < 40; i++) {
@@ -345,59 +340,54 @@ app.post('/api/scrape-hotels', async (req, res) => {
         const poll = await api.post(`v2/hotel-content/HotelSearch/poll-results/${sid}`, { pageSize: 20, pageNumber: 1 });
         const data = poll.data?.result || {};
         hotels = data.hotels || [];
-        
-        // Immediate Yield: Return as soon as we have ANY results (iteration > 2 to ensure we get a few)
+
         if (hotels.length >= 1 && (data.isSearchCompleted || i > 3)) {
           const duration = Date.now() - startTime;
           console.log(`[API Speed] Returned ${hotels.length} hotels in ${duration}ms (Iteration ${i})`);
           break;
         }
       } catch (e) { }
-      await wait(100); 
+      await wait(100);
     }
 
     const cleaned = hotels.map(h => {
       let imageUrl = h.content?.images?.[0]?.url || "https://picsum.photos/400/300";
-      // Faster regex replacement for image quality
       if (imageUrl.includes('static.')) imageUrl = imageUrl.replace(/\/small$/, '/large');
-      
+
       return {
-        hotelId: h.hotelId, 
+        hotelId: h.hotelId,
         name: h.content?.title?.ar || h.content?.title?.en,
         price: h.price?.[0]?.minPricePerNight || h.price || 0,
-        stars: h.content?.star || 4, 
+        stars: h.content?.star || 4,
         rating: h.content?.rate || 8,
         image: imageUrl
       };
     });
 
     SMART_CACHE.set('hotels', cacheKey, cleaned);
-    
-    // 3. Store in Supabase for future users
+
     try {
       await supabase.from('search_cache').upsert({ key: cacheKey, data: cleaned, created_at: new Date() });
     } catch (e) { console.warn('[Supabase] Could not store cache. Ensure "search_cache" table exists.'); }
 
     return res.json({ success: true, data: { hotels: cleaned } });
   } catch (e) {
-    // If token expired, refresh and try one more time via browser
     if (e.response?.status === 401) await browserManager.refreshToken();
     return res.json({ success: false, message: e.message });
   }
 });
 
 // ==========================================
-// 4. Endpoint 2: POST /api/hotel-details (The Details/PDP)
+// 4. Endpoint 2: POST /api/hotel-details
 // ==========================================
 app.post('/api/hotel-details', async (req, res) => {
   try {
     let { hotelId, cityName, checkIn, checkOut } = req.body;
-    const cacheKey = `details-${hotelId}`; // Details don't change by date usually
-    
+    const cacheKey = `details-${hotelId}`;
+
     const localCached = SMART_CACHE.get('hotels', cacheKey);
     if (localCached) return res.json(localCached);
 
-    // Supabase Detail Cache
     try {
       const { data: sbCached } = await supabase.from('details_cache').select('data').eq('hotel_id', hotelId).single();
       if (sbCached) return res.json(sbCached.data);
@@ -406,7 +396,6 @@ app.post('/api/hotel-details', async (req, res) => {
     console.log(`[Speed Mode] Rapid Detail Fetch: ${hotelId} in ${cityName}`);
 
     const result = await browserManager.exec(async (page) => {
-      // 1. Fetch Hotel Content (Description, Images, Facilities)
       let content = null;
       try {
         content = await executeFetchInPage(page, `v2/hotel-content/HotelSearch/hotel-details/${hotelId}`);
@@ -414,15 +403,9 @@ app.post('/api/hotel-details', async (req, res) => {
         console.warn(`[Hotel Details] v2 failed, trying v1 fallback for ${hotelId}`);
         content = await executeFetchInPage(page, `v1/hotel-content/HotelSearch/hotel-details/${hotelId}`);
       }
-      
-      // 2. Fetch Rooms & Prices (Requires check-in/out)
-      // Note: We might need a session SID here if we want real-time pricing, 
-      // but for "Details" we usually want content. 
-      // If the user is on the details page, they want to see rooms.
-      
+
       const hotel = content?.result || {};
-      
-      // Map to standardized brand-neutral format
+
       const cleaned = {
         success: true,
         name: hotel.title?.ar || hotel.title?.en || "فندق",
@@ -432,7 +415,6 @@ app.post('/api/hotel-details', async (req, res) => {
         address: hotel.address?.ar || hotel.address?.en || "",
         images: (hotel.images || []).map(img => img.url.replace(/\/small$/, '/large')),
         facilities: (hotel.facilities || []).map(f => f.title?.ar || f.title?.en),
-        // Mock rooms if the real room API is too complex for a single fetch
         rooms: [
           { type: 'غرفة قياسية', price: 120, features: ['افطار مجاني', 'واي فاي'] },
           { type: 'غرفة ديلوكس', price: 180, features: ['افطار مجاني', 'اطلالة مدينة'] }
@@ -446,7 +428,7 @@ app.post('/api/hotel-details', async (req, res) => {
     try {
       await supabase.from('details_cache').upsert({ hotel_id: hotelId, data: result, created_at: new Date() });
     } catch (e) { }
-    
+
     return res.json(result);
   } catch (e) {
     console.error(`[Hotel Details] Error: ${e.message}`);
@@ -454,9 +436,8 @@ app.post('/api/hotel-details', async (req, res) => {
   }
 });
 
-
 // ==========================================
-// 5. Legacy/Flight Endpoints (Preserved & Cleaned)
+// 5. Legacy/Flight Endpoints
 // ==========================================
 app.post('/api/scrape-flights', async (req, res) => {
   const { origin, destination, date } = req.body;
@@ -479,7 +460,7 @@ app.post('/api/scrape-flights', async (req, res) => {
         return {
           id: p.proposalId,
           airline: p.providerName || "طيران غير معروف",
-          airlineCode: group.carrierCode || "IA", // Default to IA if missing
+          airlineCode: group.carrierCode || "IA",
           price: p.prices?.details?.[0]?.totalFare || 0,
           departureTime: group.departureDateTime,
           arrivalTime: group.arrivalDateTime,
@@ -492,7 +473,7 @@ app.post('/api/scrape-flights', async (req, res) => {
       if (flights.length > 5 || poll.data?.result?.isCompleted) break;
       await wait(300);
     }
-    
+
     SMART_CACHE.set('flights', cacheKey, flights);
     return res.json({ success: true, data: flights });
   } catch (e) {
@@ -501,12 +482,9 @@ app.post('/api/scrape-flights', async (req, res) => {
   }
 });
 
-// Global in-memory storage for bookings with persistence
 const BOOKINGS_FILE = path.join(__dirname, 'bookings.json');
-
 let bookings = [];
 
-// Load bookings from file on startup
 const loadBookings = () => {
   try {
     if (fs.existsSync(BOOKINGS_FILE)) {
@@ -529,7 +507,6 @@ const saveBookings = () => {
   }
 };
 
-// Initial load
 loadBookings();
 
 app.get('/api/bookings', (req, res) => {
@@ -540,7 +517,7 @@ app.get('/api/bookings', (req, res) => {
 app.post('/api/create-booking', async (req, res) => {
   const { passenger, hotelId, hotelName, checkIn, checkOut, price, type = 'hotel' } = req.body;
   const generatedRef = `SND-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-  
+
   const newBooking = {
     id: Date.now(),
     type,
@@ -554,10 +531,10 @@ app.post('/api/create-booking', async (req, res) => {
   };
 
   bookings.unshift(newBooking);
-  saveBookings(); // Persist to file
-  
+  saveBookings();
+
   console.log(`[Booking] NEW! Ref: ${generatedRef} | Passenger: ${passenger?.firstName} | Title: ${newBooking.title}`);
-  
+
   await wait(1500);
   return res.json({ success: true, bookingId: generatedRef });
 });
@@ -565,8 +542,8 @@ app.post('/api/create-booking', async (req, res) => {
 // ==========================================
 // 6. Start Server
 // ==========================================
-app.listen(PORT, () => {
+// 🔴 FIX 3: إضافة '0.0.0.0' للربط الشبكي الإجباري في Render بدلاً من localhost الافتراضي
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Scraper Service running on port ${PORT}`);
-  // Initialize browser in background to not block the server start
   browserManager.init().catch(err => console.error("[Browser] Background init failed:", err));
 });

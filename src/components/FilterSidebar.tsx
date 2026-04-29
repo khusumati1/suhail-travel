@@ -30,7 +30,7 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
   onClear
 }) => {
   // Parse prices to numbers for min/max calculation
-  const prices = originalHotels.map(h => parseInt(h.price.replace(/,/g, ''))).filter(p => !isNaN(p));
+  const prices = originalHotels.map(h => parseInt(String(h.price).replace(/,/g, ''))).filter(p => !isNaN(p));
   const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
   const maxPrice = prices.length > 0 ? Math.max(...prices) : 1000000;
 

@@ -23,7 +23,8 @@ class FlightService {
       date: payload.departure_date || payload.date_flight
     };
 
-    const response = await axios.post('https://suhail-scraper-api.onrender.com/api/scrape-flights', scraperPayload);
+    const SCRAPER_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000';
+    const response = await axios.post(`${SCRAPER_BASE_URL}/api/scrape-flights`, scraperPayload);
 
     // Normalize response to maintain compatibility with older BRK-style hooks if needed
     return {

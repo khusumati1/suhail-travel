@@ -11,7 +11,7 @@ export interface Flight {
   destination: string;
   duration: string;
   price: number;
-  currency: string;
+  currency?: string; // defaults to IQD from DOM scraper
   stops: number;
   is_bookable?: boolean;
   segments?: FlightSegment[];
@@ -32,13 +32,13 @@ export interface FlightSegment {
 export type FlightOffer = Flight;
 
 export interface Hotel {
-  hotelId: number;
+  hotelId: number | string;
   name: string;
   image: string;
   stars: number;
   rating: number;
-  reviewsCount: number;
-  price: string;
+  reviewsCount?: number;
+  price: string | number;
   provider?: string;
   location?: string;
 }

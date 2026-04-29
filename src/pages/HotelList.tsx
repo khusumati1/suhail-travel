@@ -104,7 +104,7 @@ const HotelList = () => {
       } else {
         setOriginalHotels(result.data);
         // Initialize price range based on actual data
-        const prices = result.data.map((h: any) => parseInt(h.price.replace(/,/g, ''))).filter((p: any) => !isNaN(p));
+        const prices = result.data.map((h: any) => parseInt(String(h.price).replace(/,/g, ''))).filter((p: any) => !isNaN(p));
         if (prices.length > 0) {
           setFilters(prev => ({ ...prev, priceRange: [Math.min(...prices), Math.max(...prices)] }));
         }
@@ -132,7 +132,7 @@ const HotelList = () => {
 
     // Apply Price Range
     result = result.filter(h => {
-      const p = parseInt(h.price.replace(/,/g, ''));
+      const p = parseInt(String(h.price).replace(/,/g, ''));
       return p >= filters.priceRange[0] && p <= filters.priceRange[1];
     });
 
@@ -143,8 +143,8 @@ const HotelList = () => {
 
     // Apply Sorting
     result.sort((a, b) => {
-      const priceA = parseInt(a.price.replace(/,/g, ''));
-      const priceB = parseInt(b.price.replace(/,/g, ''));
+      const priceA = parseInt(String(a.price).replace(/,/g, ''));
+      const priceB = parseInt(String(b.price).replace(/,/g, ''));
       if (sortBy === 'price_asc') return priceA - priceB;
       if (sortBy === 'price_desc') return priceB - priceA;
       if (sortBy === 'rating_desc') return b.rating - a.rating;
@@ -155,7 +155,7 @@ const HotelList = () => {
   }, [originalHotels, filters, sortBy]);
 
   const clearFilters = () => {
-    const prices = originalHotels.map(h => parseInt(h.price.replace(/,/g, ''))).filter(p => !isNaN(p));
+    const prices = originalHotels.map(h => parseInt(String(h.price).replace(/,/g, ''))).filter(p => !isNaN(p));
     setFilters({
       searchQuery: '',
       priceRange: [Math.min(...prices), Math.max(...prices)] as [number, number],

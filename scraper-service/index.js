@@ -374,10 +374,70 @@ const CANONICAL_CITY_MAP = {
 // ==========================================
 // 3. Endpoint 1: POST /api/scrape-hotels
 // ==========================================
+
+/**
+ * safeEvaluate: Retries page.evaluate() up to `maxRetries` times if the execution
+ * context is destroyed (e.g. due to SPA navigation or Cloudflare redirect).
+ * Between retries it waits for the page to stabilize again.
+ */
+async function safeEvaluate(page, fn, args = [], maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await page.evaluate(fn, ...args);
+    } catch (err) {
+      const isContextDestroyed =
+        err.message.includes('Execution context was destroyed') ||
+        err.message.includes('Cannot find context') ||
+        err.message.includes('Navigating frame was detached') ||
+        err.message.includes('frame was detached') ||
+        err.message.includes('Target closed');
+
+      if (isContextDestroyed && attempt < maxRetries) {
+        console.warn(`[safeEvaluate] Context destroyed (attempt ${attempt}/${maxRetries}), waiting for page to settle...`);
+        // Wait for the new page to reach a stable network state
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+        await wait(2000);
+        continue;
+      }
+      throw err; // Not a context error, or exhausted retries
+    }
+  }
+}
+
+/**
+ * waitForUrlToStabilize: Polls page.url() to ensure no further SPA redirects are in progress.
+ * Returns once the URL has been the same for `stableDuration` ms.
+ */
+async function waitForUrlToStabilize(page, stableDuration = 3000, maxWait = 20000) {
+  const start = Date.now();
+  let lastUrl = page.url();
+  let lastChangeTime = Date.now();
+
+  while (Date.now() - start < maxWait) {
+    await wait(500);
+    const currentUrl = page.url();
+    if (currentUrl !== lastUrl) {
+      console.log(`[Navigation] URL changed: ${lastUrl} -> ${currentUrl}`);
+      lastUrl = currentUrl;
+      lastChangeTime = Date.now();
+    }
+    if (Date.now() - lastChangeTime >= stableDuration) {
+      console.log(`[Navigation] URL stable for ${stableDuration}ms: ${currentUrl}`);
+      return;
+    }
+  }
+  console.warn(`[Navigation] URL did not stabilize within ${maxWait}ms, proceeding anyway.`);
+}
+
 /**
  * Strategy: Full DOM Scraping
  * This function navigates to the Sindibad hotel search results page and extracts data from the DOM.
  * This bypasses restricted API endpoints and Cloudflare blocks on fetch requests.
+ * 
+ * Hardened against "Execution context was destroyed" errors via:
+ *  1. Waiting for URL to stabilize after goto (catches SPA redirects)
+ *  2. Using safeEvaluate() with auto-retry on context destruction
+ *  3. Full outer retry loop that re-navigates on catastrophic failure
  */
 async function scrapeHotelsFromDOM(page, params) {
   const { cityName, cityId, checkIn, checkOut, adultsCount } = params;
@@ -387,86 +447,134 @@ async function scrapeHotelsFromDOM(page, params) {
   const fCheckOut = checkOut.split('T')[0];
   
   // Construct the search URL directly
-  // Pattern: https://sindibad.iq/hotels/Baghdad-3483?cityNameLocale=...&checkIn=...&checkOut=...
   const slug = `${cityName}-${cityId}`;
   const url = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}&step=plp&from=search`;
   
-  console.log(`[DOM Scraper] Initiating full-page search: ${url}`);
-  
-  try {
-    // Navigate with a generous timeout and wait for network stability
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
-    
-    // Additional wait for any client-side rendering or lazy-loaded elements
-    await wait(5000);
-    
-    // Aggressive scroll to trigger lazy loading of images and more results
-    await page.evaluate(async () => {
-      for (let i = 0; i < 5; i++) {
-        window.scrollBy(0, 800);
-        await new Promise(r => setTimeout(r, 600));
-      }
-      window.scrollTo(0, 0); // Back to top
-    });
+  const MAX_OUTER_RETRIES = 3;
 
-    // Scrape the results from the DOM
-    const hotels = await page.evaluate(() => {
-      const results = [];
-      // Sindibad's hotel cards are typically 'a' tags with specific classes in the list view
-      // We look for common patterns found in the PLP
-      const cards = Array.from(document.querySelectorAll('a[href*="/hotels/detail/"]')) || 
-                    Array.from(document.querySelectorAll('.flex.flex-col.gap-1'));
+  for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
+    console.log(`[DOM Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — Navigating to: ${url}`);
 
-      cards.forEach((card, index) => {
+    try {
+      // 1. Navigate with generous timeout; wait for network to settle
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
+
+      // 2. Wait for URL to stabilize (catches SPA redirects / Cloudflare JS challenges)
+      await waitForUrlToStabilize(page, 3000, 15000);
+
+      // 3. Wait for Cloudflare to clear (if any challenge page appeared)
+      await ensurePageIsReady(page);
+
+      // 4. Wait for the actual hotel card container to appear in the DOM
+      //    Try multiple selectors that Sindibad uses across versions
+      const cardSelectors = [
+        'a[href*="/hotels/detail/"]',
+        '.hotel-card',
+        '[class*="HotelCard"]',
+        '.flex.flex-col.gap-1'
+      ];
+      
+      let selectorFound = false;
+      for (const sel of cardSelectors) {
         try {
-          const name = card.querySelector('h3')?.innerText || 
-                       card.querySelector('.text-base.font-bold')?.innerText || 
-                       card.innerText.split('\n')[0];
-          
-          // Price extraction - look for currency (IQD or د.ع) and surrounding numbers
-          const text = card.innerText;
-          const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD)/) || text.match(/(د\.ع|IQD)\s*([\d,]+)/);
-          const priceValue = priceMatch ? priceMatch[1] || priceMatch[2] : null;
-          const price = priceValue ? parseInt(priceValue.replace(/,/g, ''), 10) : 0;
-
-          // Image extraction - search inside the card or its siblings
-          let img = card.querySelector('img')?.src || 
-                    card.parentElement?.querySelector('img')?.src || "";
-          
-          // Filter out small icons or placeholder svgs
-          if (img.includes('data:image') || img.includes('icon')) img = "";
-
-          if (name && price > 0) {
-            results.push({
-              hotelId: card.href?.split('/').pop() || `dom-${index}-${Date.now()}`,
-              name: name.trim(),
-              price: price,
-              image: img || "https://picsum.photos/400/300",
-              stars: card.querySelectorAll('svg[class*="text-yellow"]').length || 4,
-              rating: parseFloat(text.match(/(\d\.\d)\/10/)?.[1] || "8.5")
-            });
-          }
-        } catch (e) { /* Skip individual card failure */ }
-      });
-      
-      // Deduplicate results by name
-      const unique = [];
-      const seen = new Set();
-      results.forEach(h => {
-        if (!seen.has(h.name)) {
-          seen.add(h.name);
-          unique.push(h);
+          await page.waitForSelector(sel, { visible: true, timeout: 20000 });
+          console.log(`[DOM Scraper] Found hotel cards with selector: ${sel}`);
+          selectorFound = true;
+          break;
+        } catch (e) {
+          // Try next selector
         }
-      });
-      
-      return unique;
-    });
+      }
 
-    console.log(`[DOM Scraper] Successfully extracted ${hotels.length} hotels.`);
-    return hotels;
-  } catch (error) {
-    console.error(`[DOM Scraper] Navigation or extraction failed: ${error.message}`);
-    throw error;
+      if (!selectorFound) {
+        console.warn(`[DOM Scraper] No hotel card selector matched. Will attempt extraction anyway.`);
+        // Give extra time for any lazy rendering
+        await wait(5000);
+      }
+
+      // 5. Scroll to trigger lazy loading (wrapped in safeEvaluate)
+      await safeEvaluate(page, async () => {
+        for (let i = 0; i < 5; i++) {
+          window.scrollBy(0, 800);
+          await new Promise(r => setTimeout(r, 600));
+        }
+        window.scrollTo(0, 0); // Back to top
+      });
+
+      // Small pause after scroll for images/data to settle
+      await wait(2000);
+
+      // 6. Extract hotel data from the DOM (wrapped in safeEvaluate with retries)
+      const hotels = await safeEvaluate(page, () => {
+        const results = [];
+        // Sindibad's hotel cards are typically 'a' tags with specific classes in the list view
+        const cards = Array.from(document.querySelectorAll('a[href*="/hotels/detail/"]')) || 
+                      Array.from(document.querySelectorAll('.flex.flex-col.gap-1'));
+
+        cards.forEach((card, index) => {
+          try {
+            const name = card.querySelector('h3')?.innerText || 
+                         card.querySelector('.text-base.font-bold')?.innerText || 
+                         card.innerText.split('\n')[0];
+            
+            // Price extraction - look for currency (IQD or د.ع) and surrounding numbers
+            const text = card.innerText;
+            const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD)/) || text.match(/(د\.ع|IQD)\s*([\d,]+)/);
+            const priceValue = priceMatch ? priceMatch[1] || priceMatch[2] : null;
+            const price = priceValue ? parseInt(priceValue.replace(/,/g, ''), 10) : 0;
+
+            // Image extraction - search inside the card or its siblings
+            let img = card.querySelector('img')?.src || 
+                      card.parentElement?.querySelector('img')?.src || "";
+            
+            // Filter out small icons or placeholder svgs
+            if (img.includes('data:image') || img.includes('icon')) img = "";
+
+            if (name && price > 0) {
+              results.push({
+                hotelId: card.href?.split('/').pop() || `dom-${index}-${Date.now()}`,
+                name: name.trim(),
+                price: price,
+                image: img || "https://picsum.photos/400/300",
+                stars: card.querySelectorAll('svg[class*="text-yellow"]').length || 4,
+                rating: parseFloat(text.match(/(\d\.\d)\/10/)?.[1] || "8.5")
+              });
+            }
+          } catch (e) { /* Skip individual card failure */ }
+        });
+        
+        // Deduplicate results by name
+        const unique = [];
+        const seen = new Set();
+        results.forEach(h => {
+          if (!seen.has(h.name)) {
+            seen.add(h.name);
+            unique.push(h);
+          }
+        });
+        
+        return unique;
+      });
+
+      console.log(`[DOM Scraper] Successfully extracted ${hotels.length} hotels.`);
+      return hotels;
+
+    } catch (error) {
+      const isContextError =
+        error.message.includes('Execution context was destroyed') ||
+        error.message.includes('Cannot find context') ||
+        error.message.includes('Navigating frame was detached') ||
+        error.message.includes('Target closed') ||
+        error.message.includes('Navigation failed');
+
+      if (isContextError && outerAttempt < MAX_OUTER_RETRIES) {
+        console.warn(`[DOM Scraper] Context destroyed on attempt ${outerAttempt}, will re-navigate in 4s...`);
+        await wait(4000);
+        continue; // Re-navigate from scratch
+      }
+      console.error(`[DOM Scraper] Failed after ${outerAttempt} attempts: ${error.message}`);
+      throw error;
+    }
   }
 }
 
@@ -614,85 +722,129 @@ app.post('/api/hotel-details', async (req, res) => {
 // ==========================================
 /**
  * Strategy: Full DOM Scraping for Flights
+ * Hardened with the same context-destruction resilience as hotel scraping.
  */
 async function scrapeFlightsFromDOM(page, params) {
   const { origin, destination, date } = params;
   
   // Construct search URL
-  // Example: https://sindibad.iq/flights/BGW-IST?departing=2026-04-30&adult=1&child=0&infant=0&cabinType=Economy&flightType=OneWay&step=results
   const url = `https://sindibad.iq/flights/${origin}-${destination}?departing=${date}&adult=1&child=0&infant=0&cabinType=Economy&flightType=OneWay&step=results`;
   
-  console.log(`[Flight DOM] Navigating to: ${url}`);
-  
-  try {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
-    
-    // Wait for the results container
-    await page.waitForSelector('.flights__content', { timeout: 30000 }).catch(() => {
-      console.warn('[Flight DOM] Timeout waiting for .flights__content');
-    });
-    
-    // Extra wait for flights to load
-    await wait(5000);
+  const MAX_OUTER_RETRIES = 3;
 
-    const flights = await page.evaluate(() => {
-      const results = [];
-      const container = document.querySelector('.flights__content');
-      if (!container) return [];
+  for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
+    console.log(`[Flight DOM] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — Navigating to: ${url}`);
 
-      // Individual flight entries are direct children or within a specific list
-      // Based on observed structure, they are often in a list or div grid
-      const cards = Array.from(container.children).filter(el => el.innerText.includes('د.ع'));
+    try {
+      // 1. Navigate with generous timeout
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
 
-      cards.forEach((card, index) => {
+      // 2. Wait for URL to stabilize (catches SPA redirects)
+      await waitForUrlToStabilize(page, 3000, 15000);
+
+      // 3. Wait for Cloudflare to clear
+      await ensurePageIsReady(page);
+
+      // 4. Wait for the results container with multiple selector attempts
+      const flightSelectors = [
+        '.flights__content',
+        '[class*="FlightCard"]',
+        '[class*="flight-card"]',
+        '.flight-results'
+      ];
+
+      let selectorFound = false;
+      for (const sel of flightSelectors) {
         try {
-          const text = card.innerText;
-          
-          // Extract Times (HH:mm)
-          const times = text.match(/\d{2}:\d{2}/g);
-          const depTime = times?.[0] || "--:--";
-          const arrTime = times?.[1] || "--:--";
-          
-          // Extract Price
-          const priceMatch = text.match(/([\d,]+)\s*د\.ع/) || text.match(/([\d,]+)\s*IQD/);
-          const priceStr = priceMatch ? priceMatch[1] : "0";
-          const price = parseInt(priceStr.replace(/,/g, ''), 10);
+          await page.waitForSelector(sel, { visible: true, timeout: 20000 });
+          console.log(`[Flight DOM] Found flight container with selector: ${sel}`);
+          selectorFound = true;
+          break;
+        } catch (e) {
+          // Try next selector
+        }
+      }
 
-          // Extract Airline (This is harder as it might be an image or text)
-          // We can look for image alt text or common airline names in the text
-          const img = card.querySelector('img');
-          const airline = img?.alt || "طيران";
+      if (!selectorFound) {
+        console.warn(`[Flight DOM] No flight container selector matched. Will attempt extraction anyway.`);
+        await wait(5000);
+      }
 
-          // Duration
-          const durationMatch = text.match(/(\d+)\s*ساعات?\s*(\d+)\s*دقیقة/) || text.match(/(\d+)\s*min/);
-          let duration = "غير معروف";
-          if (durationMatch) {
-            duration = durationMatch[0];
-          }
+      // 5. Extra wait for flight data to render
+      await wait(3000);
 
-          if (price > 0) {
-            results.push({
-              id: `flight-${index}-${Date.now()}`,
-              airline: airline,
-              airlineCode: img?.src?.split('/').pop()?.split('.')[0]?.toUpperCase() || "IA",
-              price: price,
-              departureTime: depTime,
-              arrivalTime: arrTime,
-              duration: duration,
-              stops: text.includes('توقف') ? (parseInt(text.match(/(\d+)\s*توقف/)?.[1]) || 1) : 0,
-              origin: "", // Will be filled from params
-              destination: "" // Will be filled from params
-            });
-          }
-        } catch (e) {}
+      // 6. Extract flight data (wrapped in safeEvaluate with retries)
+      const flights = await safeEvaluate(page, () => {
+        const results = [];
+        const container = document.querySelector('.flights__content');
+        if (!container) return [];
+
+        // Individual flight entries are direct children or within a specific list
+        const cards = Array.from(container.children).filter(el => el.innerText.includes('د.ع'));
+
+        cards.forEach((card, index) => {
+          try {
+            const text = card.innerText;
+            
+            // Extract Times (HH:mm)
+            const times = text.match(/\d{2}:\d{2}/g);
+            const depTime = times?.[0] || "--:--";
+            const arrTime = times?.[1] || "--:--";
+            
+            // Extract Price
+            const priceMatch = text.match(/([\d,]+)\s*د\.ع/) || text.match(/([\d,]+)\s*IQD/);
+            const priceStr = priceMatch ? priceMatch[1] : "0";
+            const price = parseInt(priceStr.replace(/,/g, ''), 10);
+
+            // Extract Airline
+            const img = card.querySelector('img');
+            const airline = img?.alt || "طيران";
+
+            // Duration
+            const durationMatch = text.match(/(\d+)\s*ساعات?\s*(\d+)\s*دقیقة/) || text.match(/(\d+)\s*min/);
+            let duration = "غير معروف";
+            if (durationMatch) {
+              duration = durationMatch[0];
+            }
+
+            if (price > 0) {
+              results.push({
+                id: `flight-${index}-${Date.now()}`,
+                airline: airline,
+                airlineCode: img?.src?.split('/').pop()?.split('.')[0]?.toUpperCase() || "IA",
+                price: price,
+                departureTime: depTime,
+                arrivalTime: arrTime,
+                duration: duration,
+                stops: text.includes('توقف') ? (parseInt(text.match(/(\d+)\s*توقف/)?.[1]) || 1) : 0,
+                origin: "", // Will be filled from params
+                destination: "" // Will be filled from params
+              });
+            }
+          } catch (e) {}
+        });
+        return results;
       });
-      return results;
-    });
 
-    return flights.map(f => ({ ...f, origin, destination }));
-  } catch (error) {
-    console.error(`[Flight DOM] Scraping failed: ${error.message}`);
-    throw error;
+      console.log(`[Flight DOM] Successfully extracted ${flights.length} flights.`);
+      return flights.map(f => ({ ...f, origin, destination }));
+
+    } catch (error) {
+      const isContextError =
+        error.message.includes('Execution context was destroyed') ||
+        error.message.includes('Cannot find context') ||
+        error.message.includes('Navigating frame was detached') ||
+        error.message.includes('Target closed') ||
+        error.message.includes('Navigation failed');
+
+      if (isContextError && outerAttempt < MAX_OUTER_RETRIES) {
+        console.warn(`[Flight DOM] Context destroyed on attempt ${outerAttempt}, will re-navigate in 4s...`);
+        await wait(4000);
+        continue;
+      }
+      console.error(`[Flight DOM] Failed after ${outerAttempt} attempts: ${error.message}`);
+      throw error;
+    }
   }
 }
 

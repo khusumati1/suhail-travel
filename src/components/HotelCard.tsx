@@ -75,7 +75,7 @@ const HotelCard = forwardRef<HTMLDivElement, HotelCardProps>(({ hotel, onClick, 
           <div className="flex items-center gap-2 bg-white/95 backdrop-blur-md px-3 py-2 rounded-2xl shadow-lg border border-white/20">
             <div className="text-right">
               <p className="text-[10px] font-black text-primary leading-none">{getRatingLabel(hotel.rating)}</p>
-              <p className="text-[9px] font-bold text-muted-foreground mt-1">{hotel.reviewsCount} تقييم</p>
+              <p className="text-[9px] font-bold text-muted-foreground mt-1">{hotel.reviewsCount || '—'} تقييم</p>
             </div>
             <div className="text-base font-black text-primary bg-primary/5 w-8 h-8 flex items-center justify-center rounded-xl">
               {hotel.rating}

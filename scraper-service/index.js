@@ -47,21 +47,35 @@ class BrowserManager {
     try {
       console.log('[Extreme Speed] Initializing Warm Page Pool...');
       this.browser = await puppeteer.launch({
-        // 🔴 FIX 2: التحديث للصيغة المعيارية الجديدة وإضافة الأعلام الضرورية جداً لبيئة Render
         headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
-          '--no-zygote',       // يمنع إنشاء عمليات فرعية زائدة تستهلك الذاكرة
-          '--single-process',  // يجبر المتصفح على العمل في عملية واحدة (مهم جداً لسيرفرات لينكس المقيدة)
-          '--window-size=1280,800' // يمنع بعض مشاكل العرض الوهمي
-        ]
+          '--no-zygote',
+          '--single-process',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-web-security',
+          '--window-size=1920,1080'
+        ],
+        defaultViewport: { width: 1920, height: 1080 }
       });
 
       for (let i = 0; i < this.poolSize; i++) {
         const p = await this.browser.newPage();
+        
+        // 🛡️ Stealth: Set realistic User-Agent to override headless defaults
+        await p.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36');
+        
+        // 🛡️ Stealth: Set extra headers to mimic a real desktop browser
+        await p.setExtraHTTPHeaders({
+          'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+          'Sec-CH-UA': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+          'Sec-CH-UA-Mobile': '?0',
+          'Sec-CH-UA-Platform': '"Windows"',
+        });
+
         await p.setRequestInterception(true);
         p.on('request', r => ['image', 'font', 'media', 'stylesheet'].includes(r.resourceType()) ? r.abort() : r.continue());
         // Use domcontentloaded for faster/resilient warm up

@@ -437,157 +437,355 @@ async function waitForUrlToStabilize(page, stableDuration = 3000, maxWait = 2000
 }
 
 /**
- * Strategy: Full DOM Scraping
- * This function navigates to the Sindibad hotel search results page and extracts data from the DOM.
- * This bypasses restricted API endpoints and Cloudflare blocks on fetch requests.
+ * Strategy: Network Interception + DOM Fallback
  * 
- * Hardened against "Execution context was destroyed" errors via:
- *  1. Waiting for URL to stabilize after goto (catches SPA redirects)
- *  2. Using safeEvaluate() with auto-retry on context destruction
- *  3. Full outer retry loop that re-navigates on catastrophic failure
+ * Sindibad is a React SPA. Hotel cards are NOT in the initial HTML — they are
+ * rendered client-side after an internal XHR/fetch call to the Sindibad API.
+ * 
+ * PRIMARY STRATEGY: Intercept the XHR response that Sindibad's frontend makes
+ * to load hotel data, and extract the JSON directly from the network layer.
+ * 
+ * FALLBACK: If interception doesn't capture data, attempt aggressive DOM scraping
+ * with a full class/structure dump for debugging.
  */
 async function scrapeHotelsFromDOM(page, params) {
   const { cityName, cityId, checkIn, checkOut, adultsCount } = params;
   
-  // Format dates for the URL if they are ISO strings
   const fCheckIn = checkIn.split('T')[0];
   const fCheckOut = checkOut.split('T')[0];
   
-  // Construct the search URL directly
   const slug = `${cityName}-${cityId}`;
   const url = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}&step=plp&from=search`;
   
-  const MAX_OUTER_RETRIES = 3;
+  const MAX_OUTER_RETRIES = 2;
 
   for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
-    console.log(`[DOM Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — Navigating to: ${url}`);
+    console.log(`[Hotel Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — URL: ${url}`);
 
     try {
-      // 🔍 Track any navigations triggered by the SPA during our scraping
-      const navListener = (frame) => {
-        if (frame === page.mainFrame()) {
-          console.warn(`[DOM Scraper] ⚠️ Main frame navigated during scraping to: ${frame.url()}`);
+      // ============================================================
+      // STRATEGY 1: Network Response Interception
+      // Listen for Sindibad's internal API call that fetches hotel data
+      // ============================================================
+      let interceptedHotels = null;
+      
+      const responseHandler = async (response) => {
+        const reqUrl = response.url();
+        // Sindibad's SPA calls its own API for hotel search results
+        // Common patterns: /hotel/search, /HotelSearch, /hotel-content, /hotels/search
+        const isHotelAPI = reqUrl.includes('hotel') && reqUrl.includes('search') &&
+                           (reqUrl.includes('/api/') || reqUrl.includes('api.sindibad'));
+        
+        if (isHotelAPI && response.status() === 200) {
+          try {
+            const contentType = response.headers()['content-type'] || '';
+            if (contentType.includes('json')) {
+              const json = await response.json();
+              console.log(`[Intercept] ✅ Captured hotel API response from: ${reqUrl}`);
+              console.log(`[Intercept] Response keys: ${Object.keys(json).join(', ')}`);
+              
+              // Try to find the hotel list in the response
+              const hotelList = json.result || json.data || json.hotels || json.results || 
+                                json.result?.hotels || json.data?.hotels || [];
+              
+              if (Array.isArray(hotelList) && hotelList.length > 0) {
+                console.log(`[Intercept] Found ${hotelList.length} hotels in API response`);
+                interceptedHotels = hotelList;
+              } else if (json.result && typeof json.result === 'object') {
+                // Maybe result is an object with a nested array
+                const nestedArrays = Object.values(json.result).filter(v => Array.isArray(v));
+                for (const arr of nestedArrays) {
+                  if (arr.length > 0 && (arr[0].title || arr[0].name || arr[0].hotelName)) {
+                    console.log(`[Intercept] Found ${arr.length} hotels in nested result`);
+                    interceptedHotels = arr;
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // JSON parse might fail on non-JSON responses matching the URL pattern
+          }
         }
       };
-      page.on('framenavigated', navListener);
-
-      // 1. Navigate with generous timeout; wait for network to settle
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-
-      // 2. Wait for URL to stabilize (catches SPA redirects / Cloudflare JS challenges)
-      await waitForUrlToStabilize(page, 3000, 15000);
-
-      // 3. Wait for Cloudflare to clear (if any challenge page appeared)
-      await ensurePageIsReady(page);
-
-      // 4. Wait for the actual hotel card container to appear in the DOM
-      //    Try multiple selectors that Sindibad uses across versions
-      const cardSelectors = [
-        'a[href*="/hotels/detail/"]',
-        '.hotel-card',
-        '[class*="HotelCard"]',
-        '.flex.flex-col.gap-1'
-      ];
       
-      let selectorFound = false;
-      for (const sel of cardSelectors) {
-        try {
-          await page.waitForSelector(sel, { visible: true, timeout: 20000 });
-          console.log(`[DOM Scraper] Found hotel cards with selector: ${sel}`);
-          selectorFound = true;
-          break;
-        } catch (e) {
-          // Try next selector
+      page.on('response', responseHandler);
+      
+      // Also log ALL API requests for diagnostics
+      const requestLogger = (request) => {
+        const reqUrl = request.url();
+        if (reqUrl.includes('api') && reqUrl.includes('hotel')) {
+          console.log(`[Intercept] 📡 Hotel API request: ${request.method()} ${reqUrl}`);
         }
-      }
-
-      if (!selectorFound) {
-        console.warn(`[DOM Scraper] No hotel card selector matched. Will attempt extraction anyway.`);
-        // Give extra time for any lazy rendering
-        await wait(5000);
-      }
-
-      // 5. Scroll to trigger lazy loading (wrapped in safeEvaluate)
+      };
+      page.on('request', requestLogger);
+      
+      // Navigate to the search page (this triggers Sindibad's internal API call)
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+      
+      // Wait for URL to stabilize
+      await waitForUrlToStabilize(page, 3000, 15000);
+      
+      // Wait for Cloudflare to clear
+      await ensurePageIsReady(page);
+      
+      // Give the SPA extra time to make its API call and render
+      console.log(`[Hotel Scraper] Waiting 10s for SPA to complete API calls...`);
+      await wait(10000);
+      
+      // Scroll to trigger any lazy loading
       await safeEvaluate(page, async () => {
-        for (let i = 0; i < 5; i++) {
-          window.scrollBy(0, 800);
-          await new Promise(r => setTimeout(r, 600));
+        for (let i = 0; i < 8; i++) {
+          window.scrollBy(0, 600);
+          await new Promise(r => setTimeout(r, 500));
         }
-        window.scrollTo(0, 0); // Back to top
-      });
-
-      // Small pause after scroll for images/data to settle
-      await wait(2000);
-
-      // 6. Extract hotel data from the DOM (wrapped in safeEvaluate with retries)
-      const hotels = await safeEvaluate(page, () => {
-        const results = [];
+        window.scrollTo(0, 0);
+      }).catch(() => {});
+      
+      // Wait a bit more after scrolling
+      await wait(3000);
+      
+      // Clean up listeners
+      page.removeListener('response', responseHandler);
+      page.removeListener('request', requestLogger);
+      
+      // ============================================================
+      // Check if we captured hotel data via network interception
+      // ============================================================
+      if (interceptedHotels && interceptedHotels.length > 0) {
+        console.log(`[Hotel Scraper] ✅ Strategy 1 SUCCESS: ${interceptedHotels.length} hotels from network interception`);
         
-        // 🔍 Diagnostic: Log what the browser sees
-        console.log(`[DOM Diag] URL: ${window.location.href}`);
-        console.log(`[DOM Diag] Title: ${document.title}`);
-        console.log(`[DOM Diag] Body text length: ${document.body.innerText.length}`);
+        // Normalize the intercepted data to our standard format
+        const hotels = interceptedHotels.map((h, index) => {
+          const name = h.title?.ar || h.title?.en || h.name || h.hotelName || `Hotel ${index + 1}`;
+          const price = h.minPrice || h.price || h.startingPrice || h.min_price || 0;
+          const imgUrl = h.image || h.imageUrl || h.thumbnail || 
+                         (h.images && h.images[0]?.url) || (h.images && h.images[0]) || '';
+          
+          return {
+            hotelId: h.id || h.hotelId || h.hotel_id || `api-${index}-${Date.now()}`,
+            name: typeof name === 'string' ? name : (name?.ar || name?.en || `Hotel ${index + 1}`),
+            price: typeof price === 'number' ? price : parseInt(String(price).replace(/,/g, ''), 10) || 0,
+            image: imgUrl || 'https://picsum.photos/400/300',
+            stars: h.star || h.stars || h.rating_star || 4,
+            rating: h.rate || h.rating || h.score || 8.5,
+            location: h.address?.ar || h.address?.en || h.location || h.city || ''
+          };
+        }).filter(h => h.price > 0);
         
-        // Sindibad's hotel cards are typically 'a' tags with specific classes in the list view
-        const cards = Array.from(document.querySelectorAll('a[href*="/hotels/detail/"]'));
-        const fallbackCards = Array.from(document.querySelectorAll('.flex.flex-col.gap-1'));
+        return hotels;
+      }
+      
+      console.warn(`[Hotel Scraper] Strategy 1 (Network Interception) did not capture data. Trying Strategy 2 (DOM)...`);
+      
+      // ============================================================
+      // STRATEGY 2: Aggressive DOM Scraping (Fallback)
+      // Dump the page structure for debugging and try broader selectors
+      // ============================================================
+      const domResult = await safeEvaluate(page, () => {
+        const diag = {
+          url: window.location.href,
+          title: document.title,
+          bodyLength: document.body.innerText.length,
+          bodySnippet: document.body.innerText.substring(0, 500),
+          hotels: [],
+          classesFound: [],
+          allLinks: [],
+          allImages: 0
+        };
         
-        console.log(`[DOM Diag] Primary selector (a[href*="/hotels/detail/"]) found: ${cards.length} cards`);
-        console.log(`[DOM Diag] Fallback selector (.flex.flex-col.gap-1) found: ${fallbackCards.length} cards`);
-        
-        const activeCards = cards.length > 0 ? cards : fallbackCards;
-
-        activeCards.forEach((card, index) => {
-          try {
-            const name = card.querySelector('h3')?.innerText || 
-                         card.querySelector('.text-base.font-bold')?.innerText || 
-                         card.innerText.split('\n')[0];
-            
-            // Price extraction - look for currency (IQD or د.ع) and surrounding numbers
-            const text = card.innerText;
-            const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD)/) || text.match(/(د\.ع|IQD)\s*([\d,]+)/);
-            const priceValue = priceMatch ? priceMatch[1] || priceMatch[2] : null;
-            const price = priceValue ? parseInt(priceValue.replace(/,/g, ''), 10) : 0;
-
-            // Image extraction - search inside the card or its siblings
-            let img = card.querySelector('img')?.src || 
-                      card.parentElement?.querySelector('img')?.src || "";
-            
-            // Filter out small icons or placeholder svgs
-            if (img.includes('data:image') || img.includes('icon')) img = "";
-
-            if (name && price > 0) {
-              results.push({
-                hotelId: card.href?.split('/').pop() || `dom-${index}-${Date.now()}`,
-                name: name.trim(),
-                price: price,
-                image: img || "https://picsum.photos/400/300",
-                stars: card.querySelectorAll('svg[class*="text-yellow"]').length || 4,
-                rating: parseFloat(text.match(/(\d\.\d)\/10/)?.[1] || "8.5")
-              });
-            }
-          } catch (e) { /* Skip individual card failure */ }
+        // Dump unique class names on the page (top-level containers)
+        const allElements = document.querySelectorAll('div[class], section[class], a[class]');
+        const classSet = new Set();
+        allElements.forEach(el => {
+          el.classList.forEach(cls => classSet.add(cls));
         });
+        diag.classesFound = Array.from(classSet).slice(0, 80);
         
-        // Deduplicate results by name
-        const unique = [];
-        const seen = new Set();
-        results.forEach(h => {
-          if (!seen.has(h.name)) {
-            seen.add(h.name);
-            unique.push(h);
+        // Find ALL links on the page
+        document.querySelectorAll('a[href]').forEach(a => {
+          if (a.href.includes('hotel')) {
+            diag.allLinks.push(a.href);
           }
         });
         
-        return unique;
+        // Count images
+        diag.allImages = document.querySelectorAll('img').length;
+        
+        // Strategy 2A: Try broader selectors for hotel cards
+        // Look for ANY element containing price text (IQD / د.ع)
+        const allDivs = Array.from(document.querySelectorAll('div, a, article, li, section'));
+        const priceContainers = allDivs.filter(el => {
+          const text = el.innerText || '';
+          return (text.includes('د.ع') || text.includes('IQD')) && 
+                 text.length < 2000 && text.length > 30;
+        });
+        
+        console.log(`[DOM Fallback] Found ${priceContainers.length} elements containing price text`);
+        
+        // Among price containers, try to extract hotel data
+        const seen = new Set();
+        priceContainers.forEach((container, index) => {
+          try {
+            const text = container.innerText;
+            
+            // Skip if this is the filter/sidebar section
+            if (text.includes('نجوم الفندق') && text.includes('تقييم النزلاء')) return;
+            
+            // Extract name (first line or heading)
+            const heading = container.querySelector('h1, h2, h3, h4, h5, h6, [class*="title"], [class*="name"]');
+            const name = heading?.innerText?.trim() || text.split('\n').find(l => l.trim().length > 3 && !l.includes('د.ع'))?.trim();
+            
+            if (!name || seen.has(name)) return;
+            
+            // Extract price
+            const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD)/) || text.match(/(د\.ع|IQD)\s*([\d,]+)/);
+            const priceValue = priceMatch ? (priceMatch[1] || priceMatch[2]) : null;
+            const price = priceValue ? parseInt(priceValue.replace(/,/g, ''), 10) : 0;
+            
+            if (price <= 0) return;
+            
+            // Extract image
+            let img = container.querySelector('img')?.src || 
+                      container.parentElement?.querySelector('img')?.src || '';
+            if (img.includes('data:image') || img.includes('icon') || img.includes('svg')) img = '';
+            
+            // Extract link
+            const link = container.closest('a')?.href || container.querySelector('a')?.href || '';
+            const hotelId = link ? link.split('/').pop() : `dom-${index}-${Date.now()}`;
+            
+            // Extract star rating
+            const starEls = container.querySelectorAll('svg[class*="yellow"], svg[class*="star"], [class*="star"]');
+            const stars = starEls.length || 4;
+            
+            // Extract rating number
+            const ratingMatch = text.match(/(\d\.?\d?)\s*\/\s*10/) || text.match(/(\d\.?\d?)\s*\/\s*5/);
+            const rating = ratingMatch ? parseFloat(ratingMatch[1]) : 8.5;
+            
+            seen.add(name);
+            diag.hotels.push({
+              hotelId,
+              name,
+              price,
+              image: img || 'https://picsum.photos/400/300',
+              stars: Math.min(stars, 5),
+              rating
+            });
+          } catch (e) { /* skip */ }
+        });
+        
+        return diag;
       });
-
-      console.log(`[DOM Scraper] Successfully extracted ${hotels.length} hotels.`);
-      page.removeListener('framenavigated', navListener);
-      return hotels;
-
+      
+      // Log diagnostics
+      console.log(`[DOM Fallback] URL: ${domResult.url}`);
+      console.log(`[DOM Fallback] Title: ${domResult.title}`);
+      console.log(`[DOM Fallback] Body length: ${domResult.bodyLength}`);
+      console.log(`[DOM Fallback] Body snippet: ${domResult.bodySnippet?.substring(0, 200)}`);
+      console.log(`[DOM Fallback] Classes found: ${domResult.classesFound?.slice(0, 30).join(', ')}`);
+      console.log(`[DOM Fallback] Hotel links found: ${domResult.allLinks?.slice(0, 10).join(', ')}`);
+      console.log(`[DOM Fallback] Images on page: ${domResult.allImages}`);
+      console.log(`[DOM Fallback] Hotels extracted: ${domResult.hotels?.length || 0}`);
+      
+      if (domResult.hotels && domResult.hotels.length > 0) {
+        console.log(`[Hotel Scraper] ✅ Strategy 2 SUCCESS: ${domResult.hotels.length} hotels from DOM fallback`);
+        return domResult.hotels;
+      }
+      
+      // ============================================================
+      // STRATEGY 3: Direct API call from within the browser context
+      // Since the page has passed Cloudflare, we can make fetch() calls
+      // from within it, inheriting all cookies/tokens
+      // ============================================================
+      console.warn(`[Hotel Scraper] Strategy 2 (DOM) also returned 0 hotels. Trying Strategy 3 (in-page fetch)...`);
+      
+      const apiHotels = await safeEvaluate(page, async (searchParams) => {
+        const { cityId, fCheckIn, fCheckOut, adultsCount } = searchParams;
+        
+        // Try multiple known Sindibad API endpoints
+        const endpoints = [
+          {
+            url: '/api/v2/hotel-content/HotelSearch/search',
+            body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
+          },
+          {
+            url: '/api/v1/hotel-content/HotelSearch/search', 
+            body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
+          },
+          {
+            url: `https://api.sindibad.iq/api/v2/hotel-content/HotelSearch/search`,
+            body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
+          }
+        ];
+        
+        for (const ep of endpoints) {
+          try {
+            console.log(`[Strategy 3] Trying: ${ep.url}`);
+            const token = localStorage.getItem('token') ||
+              JSON.parse(localStorage.getItem('auth') || '{}')?.token || '';
+            
+            const resp = await fetch(ep.url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'accept-token': token,
+                'appversion': '1.254.0',
+                'currencytype': 'IQD',
+                'device': 'web',
+                'language': 'ar'
+              },
+              body: JSON.stringify(ep.body)
+            });
+            
+            if (!resp.ok) {
+              console.log(`[Strategy 3] ${ep.url} returned ${resp.status}`);
+              continue;
+            }
+            
+            const json = await resp.json();
+            console.log(`[Strategy 3] Response keys: ${Object.keys(json).join(', ')}`);
+            
+            const hotelList = json.result || json.data || json.hotels || [];
+            const hotels = Array.isArray(hotelList) ? hotelList : 
+                          (hotelList.hotels || hotelList.items || Object.values(hotelList).find(v => Array.isArray(v)) || []);
+            
+            if (hotels.length > 0) {
+              console.log(`[Strategy 3] ✅ Found ${hotels.length} hotels via ${ep.url}`);
+              return hotels.map((h, i) => ({
+                hotelId: h.id || h.hotelId || `api3-${i}`,
+                name: h.title?.ar || h.title?.en || h.name || h.hotelName || `Hotel ${i+1}`,
+                price: h.minPrice || h.price || h.startingPrice || 0,
+                image: h.image || h.imageUrl || (h.images?.[0]?.url) || (h.images?.[0]) || '',
+                stars: h.star || h.stars || 4,
+                rating: h.rate || h.rating || 8.5,
+                location: h.address?.ar || h.address?.en || h.location || ''
+              })).filter(h => h.price > 0);
+            }
+          } catch (e) {
+            console.log(`[Strategy 3] Error on ${ep.url}: ${e.message}`);
+          }
+        }
+        
+        return [];
+      }, [{ cityId, fCheckIn, fCheckOut, adultsCount }]);
+      
+      if (apiHotels && apiHotels.length > 0) {
+        console.log(`[Hotel Scraper] ✅ Strategy 3 SUCCESS: ${apiHotels.length} hotels from in-page fetch`);
+        return apiHotels;
+      }
+      
+      console.error(`[Hotel Scraper] All 3 strategies returned 0 hotels on attempt ${outerAttempt}`);
+      
+      if (outerAttempt < MAX_OUTER_RETRIES) {
+        console.log(`[Hotel Scraper] Retrying in 5s...`);
+        await wait(5000);
+        continue;
+      }
+      
+      return [];
+      
     } catch (error) {
-      page.removeListener('framenavigated', navListener);
       const isContextError =
         error.message.includes('Execution context was destroyed') ||
         error.message.includes('Cannot find context') ||
@@ -596,11 +794,11 @@ async function scrapeHotelsFromDOM(page, params) {
         error.message.includes('Navigation failed');
 
       if (isContextError && outerAttempt < MAX_OUTER_RETRIES) {
-        console.warn(`[DOM Scraper] Context destroyed on attempt ${outerAttempt}, will re-navigate in 4s...`);
+        console.warn(`[Hotel Scraper] Context destroyed on attempt ${outerAttempt}, re-navigating in 4s...`);
         await wait(4000);
-        continue; // Re-navigate from scratch
+        continue;
       }
-      console.error(`[DOM Scraper] Failed after ${outerAttempt} attempts: ${error.message}`);
+      console.error(`[Hotel Scraper] Failed after ${outerAttempt} attempts: ${error.message}`);
       throw error;
     }
   }

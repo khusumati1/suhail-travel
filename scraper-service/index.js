@@ -226,8 +226,11 @@ async function ensurePageIsReady(page) {
 }
 
 const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
-  // Use the main domain for internal fetch to avoid cross-subdomain issues and 404s
-  const fullUrl = path.startsWith('http') ? path : `https://sindibad.iq/api/${path}`;
+  // Use relative path if it starts with /api to let the browser handle domain/CORS
+  // Otherwise use the full URL with the main domain as primary
+  const fullUrl = (path.startsWith('/api') || path.startsWith('http')) 
+    ? path 
+    : `https://sindibad.iq/api/${path}`;
   
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -267,20 +270,29 @@ const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
           });
           const text = await response.text();
           if (!response.ok) return { success: false, status: response.status, error: text || 'Empty error' };
-          return { success: true, data: JSON.parse(text) };
+          try {
+            return { success: true, data: JSON.parse(text) };
+          } catch (parseErr) {
+            return { success: false, status: response.status, error: 'JSON Parse Error: ' + text.substring(0, 100) };
+          }
         } catch (e) { return { success: false, status: 0, error: e.message }; }
       }, fullUrl, options);
 
       if (!result.success) {
-        // If it's a 404, we might have a path issue. Log it clearly.
         console.warn(`[Cloudflare] Fetch failed (${result.status}) for ${fullUrl}: ${result.error}`);
         
         if (result.status === 403) throw new Error('Cloudflare Blocked API (403)');
         if (result.status === 404) {
-          // Try a quick fallback to api subdomain if the main domain failed
-          if (fullUrl.includes('sindibad.iq/api/')) {
-            const fallbackUrl = fullUrl.replace('sindibad.iq/api/', 'api.sindibad.iq/api/');
-            console.log(`[Cloudflare] 404 fallback: trying ${fallbackUrl}`);
+          // If relative path failed, try full URL with api subdomain
+          if (fullUrl.startsWith('/api/')) {
+             const fallbackUrl = `https://api.sindibad.iq${fullUrl}`;
+             console.log(`[Cloudflare] 404 fallback (Relative -> Subdomain): trying ${fallbackUrl}`);
+             return await executeFetchInPage(page, fallbackUrl, options, 0);
+          }
+          // If main domain full URL failed, try api subdomain
+          if (fullUrl.includes('https://sindibad.iq/api/')) {
+            const fallbackUrl = fullUrl.replace('https://sindibad.iq/api/', 'https://api.sindibad.iq/api/');
+            console.log(`[Cloudflare] 404 fallback (Main -> Subdomain): trying ${fallbackUrl}`);
             return await executeFetchInPage(page, fallbackUrl, options, 0);
           }
           throw new Error(`Browser API Error: 404 - Endpoint not found at ${fullUrl}`);
@@ -309,10 +321,12 @@ const executeFetchInPage = async (page, path, options = {}, retries = 2) => {
  * Utility: Resolve City ID and Country ID dynamically from Sindibad's Autocomplete API
  */
 const resolveCityId = async (cityName, page) => {
-  // Try multiple endpoint versions for robustness
+  // Try multiple endpoint versions for robustness - using relative paths to leverage browser context
   const paths = [
-    `v2/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`,
-    `v1/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`
+    `/api/v2/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`,
+    `/api/v2/hotel-content/HotelSearch/search-suggestions?query=${encodeURIComponent(cityName)}`,
+    `/api/v1/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`,
+    `v2/hotel-content/HotelSearch/search-suggest?query=${encodeURIComponent(cityName)}`
   ];
 
   for (const path of paths) {
@@ -322,10 +336,10 @@ const resolveCityId = async (cityName, page) => {
       const cityMatch = suggestions.find(s => s.type === 'CITY' || s.type === 'City') || suggestions[0];
 
       if (cityMatch) {
-        console.log(`[Hotel] Resolved ${cityName} -> ID: ${cityMatch.cityId || cityMatch.id}, Country: ${cityMatch.countryId}`);
+        console.log(`[Hotel] Resolved ${cityName} -> ID: ${cityMatch.cityId || cityMatch.id || cityMatch.cityID}, Country: ${cityMatch.countryId || cityMatch.countryID}`);
         return {
-          cityId: cityMatch.cityId || cityMatch.id,
-          countryId: cityMatch.countryId || 17,
+          cityId: cityMatch.cityId || cityMatch.id || cityMatch.cityID,
+          countryId: cityMatch.countryId || cityMatch.countryID || 17,
           cityName: cityMatch.name || cityMatch.title || cityName
         };
       }
@@ -411,14 +425,15 @@ app.post('/api/scrape-hotels', async (req, res) => {
 
     sid = await attemptSearch(startPayload);
 
-    if (!sid) {
-      console.warn(`[Hotel] Resolving City ID dynamically for ${cityName}...`);
+    // 🛡️ If cityId is 0 or search failed, we MUST resolve the ID correctly
+    if (!sid || Number(cityId) <= 0) {
+      console.warn(`[Hotel] Invalid City ID (${cityId}) or failed direct search. Resolving dynamically for ${cityName}...`);
       const resolved = await browserManager.exec(async (page) => {
         return await resolveCityId(cityName, page);
       });
 
-      if (resolved && resolved.cityId !== Number(cityId)) {
-        console.log(`[Hotel] Corrected City ID for ${cityName}: ${cityId} -> ${resolved.cityId}`);
+      if (resolved) {
+        console.log(`[Hotel] Corrected ID for ${cityName}: ${cityId} -> ${resolved.cityId}`);
         startPayload.cityId = Number(resolved.cityId);
         startPayload.countryId = Number(resolved.countryId);
         sid = await attemptSearch(startPayload);

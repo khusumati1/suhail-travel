@@ -65,10 +65,17 @@ class BrowserManager {
       for (let i = 0; i < this.poolSize; i++) {
         const p = await this.browser.newPage();
         
-        // 🛡️ Pipe browser console to Node for better debugging
+        // 🛡️ Pipe ALL browser console messages to Node for debugging
         p.on('console', msg => {
+          const type = msg.type(); // 'log', 'warn', 'error', etc.
           const text = msg.text();
-          if (text.includes('[Browser]')) console.log(text);
+          if (type === 'error') {
+            console.error(`[Browser:error] ${text}`);
+          } else if (type === 'warn') {
+            console.warn(`[Browser:warn] ${text}`);
+          } else {
+            console.log(`[Browser:${type}] ${text}`);
+          }
         });
         
         // 🛡️ Stealth: Set realistic User-Agent to override headless defaults
@@ -456,8 +463,16 @@ async function scrapeHotelsFromDOM(page, params) {
     console.log(`[DOM Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — Navigating to: ${url}`);
 
     try {
+      // 🔍 Track any navigations triggered by the SPA during our scraping
+      const navListener = (frame) => {
+        if (frame === page.mainFrame()) {
+          console.warn(`[DOM Scraper] ⚠️ Main frame navigated during scraping to: ${frame.url()}`);
+        }
+      };
+      page.on('framenavigated', navListener);
+
       // 1. Navigate with generous timeout; wait for network to settle
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
       // 2. Wait for URL to stabilize (catches SPA redirects / Cloudflare JS challenges)
       await waitForUrlToStabilize(page, 3000, 15000);
@@ -507,11 +522,22 @@ async function scrapeHotelsFromDOM(page, params) {
       // 6. Extract hotel data from the DOM (wrapped in safeEvaluate with retries)
       const hotels = await safeEvaluate(page, () => {
         const results = [];
+        
+        // 🔍 Diagnostic: Log what the browser sees
+        console.log(`[DOM Diag] URL: ${window.location.href}`);
+        console.log(`[DOM Diag] Title: ${document.title}`);
+        console.log(`[DOM Diag] Body text length: ${document.body.innerText.length}`);
+        
         // Sindibad's hotel cards are typically 'a' tags with specific classes in the list view
-        const cards = Array.from(document.querySelectorAll('a[href*="/hotels/detail/"]')) || 
-                      Array.from(document.querySelectorAll('.flex.flex-col.gap-1'));
+        const cards = Array.from(document.querySelectorAll('a[href*="/hotels/detail/"]'));
+        const fallbackCards = Array.from(document.querySelectorAll('.flex.flex-col.gap-1'));
+        
+        console.log(`[DOM Diag] Primary selector (a[href*="/hotels/detail/"]) found: ${cards.length} cards`);
+        console.log(`[DOM Diag] Fallback selector (.flex.flex-col.gap-1) found: ${fallbackCards.length} cards`);
+        
+        const activeCards = cards.length > 0 ? cards : fallbackCards;
 
-        cards.forEach((card, index) => {
+        activeCards.forEach((card, index) => {
           try {
             const name = card.querySelector('h3')?.innerText || 
                          card.querySelector('.text-base.font-bold')?.innerText || 
@@ -557,9 +583,11 @@ async function scrapeHotelsFromDOM(page, params) {
       });
 
       console.log(`[DOM Scraper] Successfully extracted ${hotels.length} hotels.`);
+      page.removeListener('framenavigated', navListener);
       return hotels;
 
     } catch (error) {
+      page.removeListener('framenavigated', navListener);
       const isContextError =
         error.message.includes('Execution context was destroyed') ||
         error.message.includes('Cannot find context') ||

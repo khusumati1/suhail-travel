@@ -6,6 +6,8 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 const path = require('path');
+let cheerio;
+try { cheerio = require('cheerio'); } catch (e) { console.warn('[Init] Cheerio not found, will use Regex fallback for DOM.'); }
 
 // Initialize Puppeteer Stealth
 puppeteer.use(StealthPlugin());
@@ -90,6 +92,8 @@ class BrowserManager {
           Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
           Object.defineProperty(navigator, 'deviceMemory', { get: () => 16 });
           Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+          // GHOST INFILTRATOR: Bypass latest headless detection
+          window.chrome = { runtime: {} };
         });
 
         // 🛡️ Stealth: Set extra headers to mimic a real desktop browser
@@ -538,16 +542,11 @@ async function scrapeHotelsFromDOM(page, params) {
     let missionOver = false;
 
     const resolveMission = async (data) => {
-      if (missionOver) return;
+      if (missionOver || !data || data.length === 0) return;
       missionOver = true;
-      console.log(`[Vault] 🔒 LOCKING DATA: ${data?.length || 0} hotels found. Terminating scraper.`);
-      
-      // Attempt to close page immediately to stop all other logic
-      try {
-        await page.close().catch(() => {});
-      } catch (e) {}
-      
-      resolve(data || []);
+      console.log(`[Vault] 🔒 LOCKING DATA: ${data.length} hotels found.`);
+      await page.close().catch(() => {});
+      resolve(data);
     };
 
     const fCheckIn = checkIn.split('T')[0];
@@ -559,33 +558,26 @@ async function scrapeHotelsFromDOM(page, params) {
 
     for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
       if (missionOver) break;
-      console.log(`[Hotel Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — URL: ${url}`);
+      console.log(`[Hotel Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — Stakeout at: ${url}`);
 
       try {
         // ============================================================
-        // STRATEGY 1: Network Response Interception
+        // STRATEGY 1: Persistent Stakeout Interception (20s)
         // ============================================================
         const responseHandler = async (response) => {
           if (missionOver) return;
           try {
             const reqUrl = response.url();
-            const isHotelAPI = (reqUrl.includes('hotel') && reqUrl.includes('search')) || reqUrl.includes('poll-results');
-            
-            if (isHotelAPI && response.status() === 200) {
-              const contentType = response.headers()['content-type'] || '';
-              if (contentType.includes('json')) {
-                const json = await response.json();
-                
-                // PRECISION: Only resolve if hotels are actually present in the result
-                const resultObj = json.result || json.data || json;
-                const hotelList = resultObj.hotels || (Array.isArray(resultObj) ? resultObj : []);
-                
-                if (hotelList.length > 0) {
-                  const mapped = hotelList.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0 && h.name);
-                  if (mapped.length > 0) {
-                    console.log(`[Intercept] ✅ Strategy 1 SUCCESS: Caught ${mapped.length} REAL hotels.`);
-                    await resolveMission(mapped);
-                  }
+            if (reqUrl.includes('hotel') && (reqUrl.includes('search') || reqUrl.includes('poll'))) {
+              const json = await response.json();
+              const resultObj = json.result || json.data || json;
+              const hotelList = resultObj.hotels || (Array.isArray(resultObj) ? resultObj : []);
+              
+              if (hotelList.length > 0) {
+                const mapped = hotelList.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0 && h.name);
+                if (mapped.length > 0) {
+                  console.log(`[Stakeout] ✅ Captured ${mapped.length} hotels from network.`);
+                  await resolveMission(mapped);
                 }
               }
             }
@@ -594,124 +586,90 @@ async function scrapeHotelsFromDOM(page, params) {
 
         page.on('response', responseHandler);
 
-        // 1. Navigation & Interception RACE
+        // Navigation & 20s Stakeout
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+        
+        // Strategy 3 (Sneak-In): Try direct axios call if sessionId exists
         try {
-          await Promise.race([
-            (async () => {
-              while (!missionOver) await wait(500); // Poll for missionOver
-              return true;
-            })(),
-            (async () => {
-              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-              await wait(12000);
-              return false;
-            })(),
-            wait(25000).then(() => false)
-          ]);
-        } catch (e) {}
-
-        if (missionOver) break;
-
-        // ============================================================
-        // STRATEGY 2: Selective DOM Cluster Targeting
-        // ============================================================
-        console.warn(`[Vault] Strategy 1 failed. Engaging Selective DOM Cluster Scraper...`);
-        await ensurePageIsReady(page);
-
-        const cardResults = await safeEvaluate(page, () => {
-          const results = [];
-          const seen = new Set();
-          
-          // Target elements that look like hotel cards (clusters of image + price + name)
-          // Sindibad specific: images from assets.sindibad.iq
-          const containers = Array.from(document.querySelectorAll('div, a, article, section')).filter(el => {
-            const html = el.innerHTML;
-            return html.includes('assets.sindibad.iq') && (html.includes('IQD') || html.includes('USD') || html.includes('د.ع'));
-          });
-
-          containers.forEach((card, idx) => {
-            try {
-              const text = card.innerText;
-              const img = card.querySelector('img[src*="assets.sindibad.iq"]')?.src || '';
-              
-              // Name: Look for h1-h6 or the first substantial text line that isn't a header
-              const nameEl = card.querySelector('h1, h2, h3, h4, h5, h6, [class*="title"], [class*="name"]');
-              let name = nameEl?.innerText?.trim() || text.split('\n')[0].trim();
-              
-              // Filter out noise
-              if (!name || name.includes('فنادق') || name.includes('Hotels') || name.length < 3) return;
-              if (seen.has(name)) return;
-
-              // Price: Regex strike
-              const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD|USD)/) || text.match(/(د\.ع|IQD|USD)\s*([\d,]+)/);
-              if (!priceMatch) return;
-              
-              const priceVal = parseInt((priceMatch[1] || priceMatch[2]).replace(/,/g, ''), 10);
-              if (priceVal < 100) return;
-
-              seen.add(name);
-              results.push({
-                hotelId: `dom-${idx}-${Date.now()}`,
-                name,
-                price: priceVal,
-                currency: text.includes('USD') ? 'USD' : 'IQD',
-                image: img || 'https://picsum.photos/400/300',
-                stars: card.querySelectorAll('svg').length || 4,
-                rating: 8.5,
-                location: ''
-              });
-            } catch (e) {}
-          });
-
-          return results;
-        });
-
-        if (cardResults && cardResults.length > 0) {
-          console.log(`[DOM Cluster] ✅ Strategy 2 SUCCESS: Found ${cardResults.length} REAL hotels.`);
-          await resolveMission(cardResults);
-          break;
-        }
-
-        // ============================================================
-        // STRATEGY 3: Direct In-Page Fetch
-        // ============================================================
-        if (missionOver) break;
-        console.warn(`[Vault] Strategy 2 failed. Attempting Direct In-Page Fetch...`);
-        const apiHotels = await safeEvaluate(page, async (p) => {
-          const endpoints = [
-            { url: '/api/v2/hotel-content/HotelSearch/search', body: { cityId: p.cityId, checkIn: p.fCheckIn, checkOut: p.fCheckOut, rooms: [{ adults: p.adultsCount, children: [] }], nationality: 'IQ' } }
-          ];
-          for (const ep of endpoints) {
-            try {
-              const token = localStorage.getItem('token') || JSON.parse(localStorage.getItem('auth') || '{}')?.token || '';
-              const r = await fetch(ep.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'accept-token': token, 'appversion': '1.254.0', 'currencytype': 'IQD', 'device': 'web', 'language': 'ar' }, body: JSON.stringify(ep.body) });
-              if (r.ok) {
-                const j = await r.json();
-                const list = j.result?.hotels || j.data?.hotels || j.result || j.data || [];
-                if (list.length > 0) return list;
-              }
-            } catch (e) {}
+          const currentUrl = page.url();
+          const sessionId = currentUrl.match(/sessionId=([^&]+)/)?.[1];
+          if (sessionId) {
+            console.log(`[Sneak-In] Found Session ID: ${sessionId}. Attempting direct spoofed fetch...`);
+            const cookies = await page.cookies();
+            const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+            const ua = await page.browser().userAgent();
+            
+            const sneakResp = await axios.post('https://api.sindibad.iq/api/v2/hotel-content/HotelSearch/poll-results', {
+              sessionId, cityId, checkIn: fCheckIn, checkOut: fCheckOut, nationality: 'IQ'
+            }, {
+              headers: { 'Cookie': cookieStr, 'User-Agent': ua, 'accept-token': browserManager.currentToken, 'appversion': '1.254.0', 'device': 'web' }
+            });
+            
+            const sneakHotels = sneakResp.data?.result?.hotels || [];
+            if (sneakHotels.length > 0) {
+              const mapped = sneakHotels.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0);
+              console.log(`[Sneak-In] ✅ Direct API Spoof SUCCESS: ${mapped.length} hotels.`);
+              await resolveMission(mapped);
+            }
           }
-          return [];
-        }, [{ cityId, fCheckIn, fCheckOut, adultsCount }]);
+        } catch (e) { console.warn(`[Sneak-In] Failed: ${e.message}`); }
 
-        if (apiHotels && apiHotels.length > 0) {
-          console.log(`[Direct] ✅ Strategy 3 SUCCESS: Found ${apiHotels.length} hotels.`);
-          const mapped = apiHotels.map((h, i) => mapSindibadHotel(h, i));
-          await resolveMission(mapped);
+        // Wait 20s for network to settle
+        for (let i = 0; i < 40; i++) {
+          if (missionOver) break;
+          await wait(500);
+        }
+
+        if (missionOver) break;
+
+        // ============================================================
+        // STRATEGY 2: Server-Side Cheerio Analysis
+        // ============================================================
+        console.warn(`[Vault] Stakeout failed. Engaging Server-Side Cheerio Analysis...`);
+        const html = await page.content();
+        const results = [];
+        
+        if (cheerio) {
+          const $ = cheerio.load(html);
+          // Look for cards containing Sindibad assets
+          $('div, a').each((i, el) => {
+            const card = $(el);
+            const cardHtml = card.html() || '';
+            if (cardHtml.includes('assets.sindibad.iq') && (cardHtml.includes('IQD') || cardHtml.includes('USD'))) {
+              const name = card.find('h1, h2, h3, h4, h5, h6').first().text().trim() || 
+                           card.find('[class*="title"], [class*="name"]').first().text().trim();
+              const priceMatch = card.text().match(/([\d,]+)\s*(د\.ع|IQD|USD)/);
+              if (name && priceMatch && !name.includes('فنادق') && !name.includes('Hotels')) {
+                results.push({
+                  hotelId: `cheerio-${i}`, name, price: parseInt(priceMatch[1].replace(/,/g, ''), 10),
+                  currency: priceMatch[2], image: card.find('img[src*="assets.sindibad.iq"]').attr('src') || '',
+                  stars: 4, rating: 8.5, location: ''
+                });
+              }
+            }
+          });
+        } else {
+          // Fallback to regex if cheerio failed to load
+          const priceMatches = html.match(/(USD|IQD|د\.ع)\s?([\d,]+)/g);
+          (priceMatches || []).forEach((m, idx) => {
+            results.push({ hotelId: `regex-${idx}`, name: 'Hotel Card', price: parseInt(m.match(/[\d,]+/)[0].replace(/,/g, ''), 10), currency: 'IQD', image: '', stars: 4, rating: 8.5, location: '' });
+          });
+        }
+
+        if (results.length > 0) {
+          console.log(`[Cheerio] ✅ Found ${results.length} hotels via server-side analysis.`);
+          await resolveMission(results);
           break;
         }
 
-        if (outerAttempt === MAX_OUTER_RETRIES) resolveMission([]);
+        if (outerAttempt === MAX_OUTER_RETRIES) resolve([]);
       } catch (error) {
-        if (missionOver) break;
         console.error(`[Vault] Error: ${error.message}`);
-        if (outerAttempt >= MAX_OUTER_RETRIES) resolveMission([]);
+        if (outerAttempt >= MAX_OUTER_RETRIES) resolve([]);
         await wait(4000);
       }
     }
-    // Ultimate fallback if loop exits without resolve
-    setTimeout(() => { if (!missionOver) resolveMission([]); }, 1000);
+    setTimeout(() => resolve([]), 1000);
   });
 }
 
@@ -781,8 +739,8 @@ app.post('/api/scrape-hotels', async (req, res) => {
     }
 
     if (safeHotels.length === 0) {
-      console.warn(`[DOM Scraper] No hotels found for ${cityName}. Returning empty list.`);
-      return res.json({ success: true, data: { hotels: [] } });
+      console.warn(`[DOM Scraper] No hotels found for ${cityName}. Final attempt failed.`);
+      return res.json({ success: false, message: "Scraper reached the end but found no hotels. WAF might be blocking." });
     }
 
     // Update Caches

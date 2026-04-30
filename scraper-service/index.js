@@ -493,11 +493,15 @@ async function waitForUrlToStabilize(page, stableDuration = 3000, maxWait = 2000
  * Helper: Map Sindibad raw JSON to our standard Hotel interface
  */
 function mapSindibadHotel(h, index) {
-  // Name extraction - be very aggressive with fallbacks
+  // 1. Name extraction - filter out headers like "فنادق في بغداد"
   let name = h.hotel_name || h.name || h.hotelName || h.hotel_title || h.title?.ar || h.title?.en || `Hotel ${index + 1}`;
   if (typeof name === 'object') name = name.ar || name.en || name.title || `Hotel ${index + 1}`;
+  
+  if (name.includes('فنادق') || name.includes('Hotels')) {
+    return { price: 0 }; // Mark for discarding
+  }
 
-  // Price extraction - covers multiple API versions/structures
+  // 2. Price extraction
   let price = 0;
   try {
     if (h.price?.total) price = h.price.total;
@@ -508,12 +512,13 @@ function mapSindibadHotel(h, index) {
     else if (h.price) price = typeof h.price === 'number' ? h.price : (h.price.amount || h.price.value || 0);
   } catch (e) { price = 0; }
   
-  // Convert price to number if it's a string (e.g. "125,000")
   if (typeof price === 'string') price = parseInt(price.replace(/,/g, ''), 10) || 0;
 
-  // Image extraction
-  const image = h.mainImage || h.thumbnail || h.image || h.imageUrl || h.thumb ||
+  // 3. Image extraction - prioritize URL within mainImage object
+  let image = h.mainImage?.url || h.mainImage || h.thumbnail || h.image || h.imageUrl || h.thumb ||
                (h.images && h.images[0]?.url) || (h.images && h.images[0]) || 'https://picsum.photos/400/300';
+  
+  if (typeof image === 'object' && image.url) image = image.url;
 
   return {
     hotelId: h.id || h.hotelId || h.hotel_id || h.hotelID || `api-${index}-${Date.now()}`,
@@ -570,13 +575,15 @@ async function scrapeHotelsFromDOM(page, params) {
               const contentType = response.headers()['content-type'] || '';
               if (contentType.includes('json')) {
                 const json = await response.json();
-                const hotelList = json.result?.hotels || json.data?.hotels || json.result || json.data || json.hotels || [];
-                const rawHotels = Array.isArray(hotelList) ? hotelList : (Object.values(hotelList).find(v => Array.isArray(v)) || []);
-
-                if (rawHotels.length > 0) {
-                  const mapped = rawHotels.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0);
+                
+                // PRECISION: Only resolve if hotels are actually present in the result
+                const resultObj = json.result || json.data || json;
+                const hotelList = resultObj.hotels || (Array.isArray(resultObj) ? resultObj : []);
+                
+                if (hotelList.length > 0) {
+                  const mapped = hotelList.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0 && h.name);
                   if (mapped.length > 0) {
-                    console.log(`[Intercept] ✅ Strategy 1 SUCCESS: Caught ${mapped.length} hotels.`);
+                    console.log(`[Intercept] ✅ Strategy 1 SUCCESS: Caught ${mapped.length} REAL hotels.`);
                     await resolveMission(mapped);
                   }
                 }
@@ -606,49 +613,62 @@ async function scrapeHotelsFromDOM(page, params) {
         if (missionOver) break;
 
         // ============================================================
-        // STRATEGY 2: Fuzzy Heuristic DOM Scraper (Regex Fallback)
+        // STRATEGY 2: Selective DOM Cluster Targeting
         // ============================================================
-        console.warn(`[Vault] Strategy 1 failed. Engaging Fuzzy Regex Scraper...`);
+        console.warn(`[Vault] Strategy 1 failed. Engaging Selective DOM Cluster Scraper...`);
         await ensurePageIsReady(page);
 
-        const fuzzyResults = await safeEvaluate(page, () => {
-          const bodyText = document.body.innerText;
-          const priceRegex = /(USD|IQD|د\.ع)\s?([\d,]+(\.\d+)?)/g;
+        const cardResults = await safeEvaluate(page, () => {
           const results = [];
           const seen = new Set();
-          const elements = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, span, a'));
+          
+          // Target elements that look like hotel cards (clusters of image + price + name)
+          // Sindibad specific: images from assets.sindibad.iq
+          const containers = Array.from(document.querySelectorAll('div, a, article, section')).filter(el => {
+            const html = el.innerHTML;
+            return html.includes('assets.sindibad.iq') && (html.includes('IQD') || html.includes('USD') || html.includes('د.ع'));
+          });
 
-          let m;
-          while ((m = priceRegex.exec(bodyText)) !== null) {
-            const price = parseInt(m[2].replace(/,/g, ''), 10);
-            if (price < 100) continue;
+          containers.forEach((card, idx) => {
+            try {
+              const text = card.innerText;
+              const img = card.querySelector('img[src*="assets.sindibad.iq"]')?.src || '';
+              
+              // Name: Look for h1-h6 or the first substantial text line that isn't a header
+              const nameEl = card.querySelector('h1, h2, h3, h4, h5, h6, [class*="title"], [class*="name"]');
+              let name = nameEl?.innerText?.trim() || text.split('\n')[0].trim();
+              
+              // Filter out noise
+              if (!name || name.includes('فنادق') || name.includes('Hotels') || name.length < 3) return;
+              if (seen.has(name)) return;
 
-            const idx = m.index;
-            const nearby = elements.find(el => {
-              const txt = (el.innerText || '').trim();
-              if (txt.length < 5 || txt.length > 100 || txt.includes(m[1])) return false;
-              const pos = bodyText.indexOf(txt);
-              return pos !== -1 && Math.abs(pos - idx) < 400;
-            });
+              // Price: Regex strike
+              const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD|USD)/) || text.match(/(د\.ع|IQD|USD)\s*([\d,]+)/);
+              if (!priceMatch) return;
+              
+              const priceVal = parseInt((priceMatch[1] || priceMatch[2]).replace(/,/g, ''), 10);
+              if (priceVal < 100) return;
 
-            if (nearby) {
-              const name = nearby.innerText.trim().split('\n')[0];
-              if (name && !seen.has(name)) {
-                seen.add(name);
-                results.push({
-                  hotelId: `fuzzy-${Math.random().toString(36).substr(2, 9)}`,
-                  name, price, currency: m[1].includes('د.ع') || m[1] === 'IQD' ? 'IQD' : 'USD',
-                  image: 'https://picsum.photos/400/300', stars: 4, rating: 8.5, location: ''
-                });
-              }
-            }
-          }
+              seen.add(name);
+              results.push({
+                hotelId: `dom-${idx}-${Date.now()}`,
+                name,
+                price: priceVal,
+                currency: text.includes('USD') ? 'USD' : 'IQD',
+                image: img || 'https://picsum.photos/400/300',
+                stars: card.querySelectorAll('svg').length || 4,
+                rating: 8.5,
+                location: ''
+              });
+            } catch (e) {}
+          });
+
           return results;
         });
 
-        if (fuzzyResults.length > 0) {
-          console.log(`[Fuzzy] ✅ Strategy 2 SUCCESS: Found ${fuzzyResults.length} hotels.`);
-          await resolveMission(fuzzyResults);
+        if (cardResults && cardResults.length > 0) {
+          console.log(`[DOM Cluster] ✅ Strategy 2 SUCCESS: Found ${cardResults.length} REAL hotels.`);
+          await resolveMission(cardResults);
           break;
         }
 

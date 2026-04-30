@@ -81,6 +81,7 @@ class ApiService {
       
       if (Array.isArray(hotelsData) && hotelsData.length === 0) {
         console.error("DEBUG: Backend returned success=true but data is EMPTY");
+        throw new Error("FATAL: No hotel data received from the server. Please check the scraper logs.");
       }
 
       const hotels: HotelOffer[] = (Array.isArray(hotelsData) ? hotelsData : []).map((h: any) => ({

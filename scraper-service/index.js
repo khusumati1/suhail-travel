@@ -115,6 +115,9 @@ class BrowserManager {
             const headers = {
               ...r.headers(),
               'Referer': p.url() || 'https://sindibad.iq/',
+              'Origin': 'https://sindibad.iq',
+              'sec-ch-ua-platform': '"Windows"',
+              'sec-ch-ua-mobile': '?0',
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
             };
             return r.continue({ headers });
@@ -525,355 +528,171 @@ function mapSindibadHotel(h, index) {
 }
 
 async function scrapeHotelsFromDOM(page, params) {
-  const { cityName, cityId, checkIn, checkOut, adultsCount } = params;
+  return new Promise(async (resolve) => {
+    const { cityName, cityId, checkIn, checkOut, adultsCount } = params;
+    let missionOver = false;
 
-  const fCheckIn = checkIn.split('T')[0];
-  const fCheckOut = checkOut.split('T')[0];
+    const resolveMission = async (data) => {
+      if (missionOver) return;
+      missionOver = true;
+      console.log(`[Vault] 🔒 LOCKING DATA: ${data?.length || 0} hotels found. Terminating scraper.`);
+      
+      // Attempt to close page immediately to stop all other logic
+      try {
+        await page.close().catch(() => {});
+      } catch (e) {}
+      
+      resolve(data || []);
+    };
 
-  const slug = `${cityName}-${cityId}`;
-  const url = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}&step=plp&from=search`;
+    const fCheckIn = checkIn.split('T')[0];
+    const fCheckOut = checkOut.split('T')[0];
+    const slug = `${cityName}-${cityId}`;
+    const url = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}&step=plp&from=search`;
 
-  const MAX_OUTER_RETRIES = 2;
+    const MAX_OUTER_RETRIES = 2;
 
-  for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
-    console.log(`[Hotel Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — URL: ${url}`);
+    for (let outerAttempt = 1; outerAttempt <= MAX_OUTER_RETRIES; outerAttempt++) {
+      if (missionOver) break;
+      console.log(`[Hotel Scraper] Attempt ${outerAttempt}/${MAX_OUTER_RETRIES} — URL: ${url}`);
 
-    try {
-      // ============================================================
-      // STRATEGY 1: Network Response Interception (Optimized v2.1)
-      // ============================================================
-      let resolveInterception;
-      const interceptionPromise = new Promise(resolve => { resolveInterception = resolve; });
-      let interceptedHotels = null;
+      try {
+        // ============================================================
+        // STRATEGY 1: Network Response Interception
+        // ============================================================
+        const responseHandler = async (response) => {
+          if (missionOver) return;
+          try {
+            const reqUrl = response.url();
+            const isHotelAPI = (reqUrl.includes('hotel') && reqUrl.includes('search')) || reqUrl.includes('poll-results');
+            
+            if (isHotelAPI && response.status() === 200) {
+              const contentType = response.headers()['content-type'] || '';
+              if (contentType.includes('json')) {
+                const json = await response.json();
+                const hotelList = json.result?.hotels || json.data?.hotels || json.result || json.data || json.hotels || [];
+                const rawHotels = Array.isArray(hotelList) ? hotelList : (Object.values(hotelList).find(v => Array.isArray(v)) || []);
 
-      const responseHandler = async (response) => {
-        try {
-          const reqUrl = response.url();
-          // Look for hotel search or poll results
-          const isHotelAPI = (reqUrl.includes('hotel') && reqUrl.includes('search')) || reqUrl.includes('poll-results');
-          
-          if (isHotelAPI && response.status() === 200) {
-            const contentType = response.headers()['content-type'] || '';
-            if (contentType.includes('json')) {
-              const json = await response.json();
-              
-              // Extract hotel list from various possible structures
-              const hotelList = json.result?.hotels || json.data?.hotels || json.result || json.data || json.hotels || [];
-              const rawHotels = Array.isArray(hotelList) ? hotelList : (Object.values(hotelList).find(v => Array.isArray(v)) || []);
-
-              if (rawHotels.length > 0) {
-                // Map the hotels using our helper
-                const mapped = rawHotels.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0);
-                
-                if (mapped.length > 0) {
-                  console.log(`[Intercept] ✅ Strategy 1 SUCCESS: Caught ${mapped.length} hotels. KILLING further strategies.`);
-                  
-                  // IMMEDIATE KILL: Close the page to stop any further network/DOM activity
-                  await page.close().catch(() => {});
-                  
-                  // Resolve the promise with our data
-                  resolveInterception(mapped);
+                if (rawHotels.length > 0) {
+                  const mapped = rawHotels.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0);
+                  if (mapped.length > 0) {
+                    console.log(`[Intercept] ✅ Strategy 1 SUCCESS: Caught ${mapped.length} hotels.`);
+                    await resolveMission(mapped);
+                  }
                 }
               }
             }
-          }
-        } catch (e) { /* silent fail for individual responses */ }
-      };
-
-      page.on('response', responseHandler);
-
-      // Also log API requests for diagnostics
-      const requestLogger = (request) => {
-        const reqUrl = request.url();
-        if (reqUrl.includes('api') && (reqUrl.includes('hotel') || reqUrl.includes('poll'))) {
-          console.log(`[Intercept] 📡 Active API request: ${request.method()} ${reqUrl.split('?')[0]}`);
-        }
-      };
-      page.on('request', requestLogger);
-
-      // 1. Navigation & Interception RACE (Extreme Early Exit)
-      console.log(`[Hotel Scraper] Racing Navigation & Interception...`);
-      
-      const hotels = await Promise.race([
-        interceptionPromise,
-        (async () => {
-          try {
-            // Navigate and wait for some settling, unless closed by interception
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-            await wait(12000);
-          } catch (e) {
-            // If page is closed by interception, this error is expected
-            if (e.message.includes('Target closed') || e.message.includes('closed')) {
-               // We just wait for the interceptionPromise to win the race
-               await wait(1000); 
-            } else {
-               console.warn(`[Hotel Scraper] Navigation warning: ${e.message}`);
-            }
-          }
-          return null;
-        })(),
-        wait(30000).then(() => null) // Absolute safety timeout
-      ]);
-
-      // Clean up listeners immediately (if page still exists)
-      try {
-        page.off('response', responseHandler);
-        page.off('request', requestLogger);
-      } catch (e) {}
-
-      // FINAL EXIT: If we have hotels, return them and STOP.
-      if (hotels && hotels.length > 0) {
-        console.log(`[Hotel Scraper] 🏆 Returning ${hotels.length} hotels to the controller.`);
-        return hotels;
-      }
-
-      console.log(`[Hotel Scraper] No early interception, proceeding with SPA settle and DOM fallback...`);
-      await wait(3000); // Minimal settle time for SPA hydration
-      await ensurePageIsReady(page);
-      
-      // Scroll to trigger any lazy loading as last resort
-      await safeEvaluate(page, async () => {
-        window.scrollBy(0, 1000);
-        await new Promise(r => setTimeout(r, 500));
-        window.scrollTo(0, 0);
-      }).catch(() => { });
-
-      console.warn(`[Hotel Scraper] Strategy 1 (Network Interception) did not capture data. Trying Strategy 2 (DOM)...`);
-
-      // ============================================================
-      // STRATEGY 2: Aggressive DOM Scraping (Fallback)
-      // Dump the page structure for debugging and try broader selectors
-      // ============================================================
-      const domResult = await safeEvaluate(page, () => {
-        const diag = {
-          url: window.location.href,
-          title: document.title,
-          bodyLength: document.body.innerText.length,
-          bodySnippet: document.body.innerText.substring(0, 500),
-          hotels: [],
-          classesFound: [],
-          allLinks: [],
-          allImages: 0
+          } catch (e) {}
         };
 
-        // Dump unique class names on the page (top-level containers)
-        const allElements = document.querySelectorAll('div[class], section[class], a[class]');
-        const classSet = new Set();
-        allElements.forEach(el => {
-          el.classList.forEach(cls => classSet.add(cls));
-        });
-        diag.classesFound = Array.from(classSet).slice(0, 80);
+        page.on('response', responseHandler);
 
-        // Find ALL links on the page
-        document.querySelectorAll('a[href]').forEach(a => {
-          if (a.href.includes('hotel')) {
-            diag.allLinks.push(a.href);
-          }
-        });
+        // 1. Navigation & Interception RACE
+        try {
+          await Promise.race([
+            (async () => {
+              while (!missionOver) await wait(500); // Poll for missionOver
+              return true;
+            })(),
+            (async () => {
+              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+              await wait(12000);
+              return false;
+            })(),
+            wait(25000).then(() => false)
+          ]);
+        } catch (e) {}
 
-        // Count images
-        diag.allImages = document.querySelectorAll('img').length;
+        if (missionOver) break;
 
-        // Strategy 2A: Try broader selectors for hotel cards
-        // Look for ANY element containing price text (IQD / د.ع)
-        const allDivs = Array.from(document.querySelectorAll('div, a, article, li, section'));
-        const priceContainers = allDivs.filter(el => {
-          const text = el.innerText || '';
-          return (text.includes('د.ع') || text.includes('IQD')) &&
-            text.length < 2000 && text.length > 30;
-        });
+        // ============================================================
+        // STRATEGY 2: Fuzzy Heuristic DOM Scraper (Regex Fallback)
+        // ============================================================
+        console.warn(`[Vault] Strategy 1 failed. Engaging Fuzzy Regex Scraper...`);
+        await ensurePageIsReady(page);
 
-        console.log(`[DOM Fallback] Found ${priceContainers.length} elements containing price text`);
+        const fuzzyResults = await safeEvaluate(page, () => {
+          const bodyText = document.body.innerText;
+          const priceRegex = /(USD|IQD|د\.ع)\s?([\d,]+(\.\d+)?)/g;
+          const results = [];
+          const seen = new Set();
+          const elements = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, span, a'));
 
-        // Among price containers, try to extract hotel data
-        const seen = new Set();
-        priceContainers.forEach((container, index) => {
-          try {
-            const text = container.innerText;
+          let m;
+          while ((m = priceRegex.exec(bodyText)) !== null) {
+            const price = parseInt(m[2].replace(/,/g, ''), 10);
+            if (price < 100) continue;
 
-            // Skip if this is the filter/sidebar section
-            if (text.includes('نجوم الفندق') && text.includes('تقييم النزلاء')) return;
-
-            // Extract name (first line or heading)
-            const heading = container.querySelector('h1, h2, h3, h4, h5, h6, [class*="title"], [class*="name"]');
-            const name = heading?.innerText?.trim() || text.split('\n').find(l => l.trim().length > 3 && !l.includes('د.ع'))?.trim();
-
-            if (!name || seen.has(name)) return;
-
-            // Extract price
-            const priceMatch = text.match(/([\d,]+)\s*(د\.ع|IQD)/) || text.match(/(د\.ع|IQD)\s*([\d,]+)/);
-            const priceValue = priceMatch ? (priceMatch[1] || priceMatch[2]) : null;
-            const price = priceValue ? parseInt(priceValue.replace(/,/g, ''), 10) : 0;
-
-            if (price <= 0) return;
-
-            // Extract image
-            let img = container.querySelector('img')?.src ||
-              container.parentElement?.querySelector('img')?.src || '';
-            if (img.includes('data:image') || img.includes('icon') || img.includes('svg')) img = '';
-
-            // Extract link
-            const link = container.closest('a')?.href || container.querySelector('a')?.href || '';
-            const hotelId = link ? link.split('/').pop() : `dom-${index}-${Date.now()}`;
-
-            // Extract star rating
-            const starEls = container.querySelectorAll('svg[class*="yellow"], svg[class*="star"], [class*="star"]');
-            const stars = starEls.length || 4;
-
-            // Extract rating number
-            const ratingMatch = text.match(/(\d\.?\d?)\s*\/\s*10/) || text.match(/(\d\.?\d?)\s*\/\s*5/);
-            const rating = ratingMatch ? parseFloat(ratingMatch[1]) : 8.5;
-
-            seen.add(name);
-            diag.hotels.push({
-              hotelId,
-              name,
-              price,
-              image: img || 'https://picsum.photos/400/300',
-              stars: Math.min(stars, 5),
-              rating
-            });
-          } catch (e) { /* skip */ }
-        });
-
-        return diag;
-      });
-
-      // Log diagnostics
-      console.log(`[DOM Fallback] URL: ${domResult.url}`);
-      console.log(`[DOM Fallback] Title: ${domResult.title}`);
-      console.log(`[DOM Fallback] Body length: ${domResult.bodyLength}`);
-      console.log(`[DOM Fallback] Body snippet: ${domResult.bodySnippet?.substring(0, 200)}`);
-      console.log(`[DOM Fallback] Classes found: ${domResult.classesFound?.slice(0, 30).join(', ')}`);
-      console.log(`[DOM Fallback] Hotel links found: ${domResult.allLinks?.slice(0, 10).join(', ')}`);
-      console.log(`[DOM Fallback] Images on page: ${domResult.allImages}`);
-      console.log(`[DOM Fallback] Hotels extracted: ${domResult.hotels?.length || 0}`);
-
-      if (domResult.hotels && domResult.hotels.length > 0) {
-        console.log(`[Hotel Scraper] ✅ Strategy 2 SUCCESS: ${domResult.hotels.length} hotels from DOM fallback`);
-        return domResult.hotels;
-      }
-
-      // ============================================================
-      // STRATEGY 3: Direct API call from within the browser context
-      // Since the page has passed Cloudflare, we can make fetch() calls
-      // from within it, inheriting all cookies/tokens
-      // ============================================================
-      console.warn(`[Hotel Scraper] Strategy 2 (DOM) also returned 0 hotels. Trying Strategy 3 (in-page fetch)...`);
-
-      const apiHotels = await safeEvaluate(page, async (searchParams) => {
-        const { cityId, fCheckIn, fCheckOut, adultsCount } = searchParams;
-
-        // Try multiple known Sindibad API endpoints
-        const endpoints = [
-          {
-            url: '/api/v2/hotel-content/HotelSearch/search',
-            body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
-          },
-          {
-            url: '/api/v1/hotel-content/HotelSearch/search',
-            body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
-          },
-          {
-            url: `https://api.sindibad.iq/api/v2/hotel-content/HotelSearch/search`,
-            body: { cityId, checkIn: fCheckIn, checkOut: fCheckOut, rooms: [{ adults: adultsCount, children: [] }], nationality: 'IQ' }
-          }
-        ];
-
-        for (const ep of endpoints) {
-          try {
-            console.log(`[Strategy 3] Trying: ${ep.url}`);
-            const token = localStorage.getItem('token') ||
-              JSON.parse(localStorage.getItem('auth') || '{}')?.token || '';
-
-            const resp = await fetch(ep.url, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'accept-token': token,
-                'appversion': '1.254.0',
-                'currencytype': 'IQD',
-                'device': 'web',
-                'language': 'ar'
-              },
-              body: JSON.stringify(ep.body)
+            const idx = m.index;
+            const nearby = elements.find(el => {
+              const txt = (el.innerText || '').trim();
+              if (txt.length < 5 || txt.length > 100 || txt.includes(m[1])) return false;
+              const pos = bodyText.indexOf(txt);
+              return pos !== -1 && Math.abs(pos - idx) < 400;
             });
 
-            if (!resp.ok) {
-              console.log(`[Strategy 3] ${ep.url} returned ${resp.status}`);
-              continue;
+            if (nearby) {
+              const name = nearby.innerText.trim().split('\n')[0];
+              if (name && !seen.has(name)) {
+                seen.add(name);
+                results.push({
+                  hotelId: `fuzzy-${Math.random().toString(36).substr(2, 9)}`,
+                  name, price, currency: m[1].includes('د.ع') || m[1] === 'IQD' ? 'IQD' : 'USD',
+                  image: 'https://picsum.photos/400/300', stars: 4, rating: 8.5, location: ''
+                });
+              }
             }
-
-            const json = await resp.json();
-            console.log(`[Strategy 3] Response keys: ${Object.keys(json).join(', ')}`);
-
-            const hotelList = json.result || json.data || json.hotels || [];
-            const hotels = Array.isArray(hotelList) ? hotelList :
-              (hotelList.hotels || hotelList.items || Object.values(hotelList).find(v => Array.isArray(v)) || []);
-
-            if (hotels.length > 0) {
-              console.log(`[Strategy 3] ✅ Found ${hotels.length} hotels via ${ep.url}`);
-              return hotels.map((h, i) => ({
-                hotelId: h.id || h.hotelId || `api3-${i}`,
-                name: h.title?.ar || h.title?.en || h.name || h.hotelName || `Hotel ${i + 1}`,
-                price: h.minPrice || h.price || h.startingPrice || 0,
-                image: h.image || h.imageUrl || (h.images?.[0]?.url) || (h.images?.[0]) || '',
-                stars: h.star || h.stars || 4,
-                rating: h.rate || h.rating || 8.5,
-                location: h.address?.ar || h.address?.en || h.location || ''
-              })).filter(h => h.price > 0);
-            }
-          } catch (e) {
-            console.log(`[Strategy 3] Error on ${ep.url}: ${e.message}`);
           }
+          return results;
+        });
+
+        if (fuzzyResults.length > 0) {
+          console.log(`[Fuzzy] ✅ Strategy 2 SUCCESS: Found ${fuzzyResults.length} hotels.`);
+          await resolveMission(fuzzyResults);
+          break;
         }
 
-        return [];
-      }, [{ cityId, fCheckIn, fCheckOut, adultsCount }]);
+        // ============================================================
+        // STRATEGY 3: Direct In-Page Fetch
+        // ============================================================
+        if (missionOver) break;
+        console.warn(`[Vault] Strategy 2 failed. Attempting Direct In-Page Fetch...`);
+        const apiHotels = await safeEvaluate(page, async (p) => {
+          const endpoints = [
+            { url: '/api/v2/hotel-content/HotelSearch/search', body: { cityId: p.cityId, checkIn: p.fCheckIn, checkOut: p.fCheckOut, rooms: [{ adults: p.adultsCount, children: [] }], nationality: 'IQ' } }
+          ];
+          for (const ep of endpoints) {
+            try {
+              const token = localStorage.getItem('token') || JSON.parse(localStorage.getItem('auth') || '{}')?.token || '';
+              const r = await fetch(ep.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'accept-token': token, 'appversion': '1.254.0', 'currencytype': 'IQD', 'device': 'web', 'language': 'ar' }, body: JSON.stringify(ep.body) });
+              if (r.ok) {
+                const j = await r.json();
+                const list = j.result?.hotels || j.data?.hotels || j.result || j.data || [];
+                if (list.length > 0) return list;
+              }
+            } catch (e) {}
+          }
+          return [];
+        }, { cityId, fCheckIn, fCheckOut, adultsCount });
 
-      if (apiHotels && apiHotels.length > 0) {
-        console.log(`[Hotel Scraper] ✅ Strategy 3 SUCCESS: ${apiHotels.length} hotels from in-page fetch`);
-        return apiHotels;
-      }
+        if (apiHotels && apiHotels.length > 0) {
+          console.log(`[Direct] ✅ Strategy 3 SUCCESS: Found ${apiHotels.length} hotels.`);
+          const mapped = apiHotels.map((h, i) => mapSindibadHotel(h, i));
+          await resolveMission(mapped);
+          break;
+        }
 
-      console.error(`[Hotel Scraper] All 3 strategies returned 0 hotels on attempt ${outerAttempt}`);
-
-      if (outerAttempt < MAX_OUTER_RETRIES) {
-        console.log(`[Hotel Scraper] Retrying in 5s...`);
-        await wait(5000);
-        continue;
-      }
-
-      // Log a snippet of the page innerText for debugging when no hotels are extracted
-      const innerSnippet = await page.evaluate(() => document.body.innerText.slice(0, 500));
-      console.log(`[Debug] Page innerText first 500 chars:\n${innerSnippet}`);
-      // No hotels extracted – dump page HTML for debugging
-      try {
-        const html = await page.content();
-        const debugPath = path.join(__dirname, 'debug_page.html');
-        fs.writeFileSync(debugPath, html, 'utf8');
-        console.log(`[Debug] Saved page HTML to ${debugPath}`);
-      } catch (dumpErr) { console.error('[Debug] Failed to write HTML dump:', dumpErr.message); }
-      return [];
-
-    } catch (error) {
-      const isContextError =
-        error.message.includes('Execution context was destroyed') ||
-        error.message.includes('Cannot find context') ||
-        error.message.includes('Navigating frame was detached') ||
-        error.message.includes('Target closed') ||
-        error.message.includes('Navigation failed');
-
-      if (isContextError && outerAttempt < MAX_OUTER_RETRIES) {
-        console.warn(`[Hotel Scraper] Context destroyed on attempt ${outerAttempt}, re-navigating in 4s...`);
+        if (outerAttempt === MAX_OUTER_RETRIES) resolveMission([]);
+      } catch (error) {
+        if (missionOver) break;
+        console.error(`[Vault] Error: ${error.message}`);
+        if (outerAttempt >= MAX_OUTER_RETRIES) resolveMission([]);
         await wait(4000);
-        continue;
       }
-      console.error(`[Hotel Scraper] Failed after ${outerAttempt} attempts: ${error.message}`);
-      throw error;
     }
-  }
+    // Ultimate fallback if loop exits without resolve
+    setTimeout(() => { if (!missionOver) resolveMission([]); }, 1000);
+  });
 }
 
 app.post('/api/scrape-hotels', async (req, res) => {
@@ -924,7 +743,7 @@ app.post('/api/scrape-hotels', async (req, res) => {
 
     console.log(`[Strategy] Switching to Full DOM Scraping for ${cityName}...`);
 
-    const hotels = await browserManager.exec(async (page) => {
+    let hotels = await browserManager.exec(async (page) => {
       return await scrapeHotelsFromDOM(page, {
         cityName,
         cityId,
@@ -933,6 +752,13 @@ app.post('/api/scrape-hotels', async (req, res) => {
         adultsCount
       });
     });
+
+    // BACKEND RESPONSE GUARD: Prevent empty results if any data was captured
+    if ((!hotels || hotels.length === 0)) {
+      console.warn(`[Vault] Guard: Hotels list is empty. Final check...`);
+      // In this version, scrapeHotelsFromDOM is a promise that resolves with data.
+      // If it returned [], we truly found nothing.
+    }
 
     if (!hotels || hotels.length === 0) {
       console.warn(`[DOM Scraper] No hotels found for ${cityName}. Returning empty list.`);

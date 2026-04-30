@@ -11,7 +11,7 @@ export interface HotelSearchResult {
   errorMessage?: string;
 }
 
-const API_URL = 'http://72.61.179.63:4000/backend/api';
+const API_URL = 'https://chuck-extent-compiled-plate.trycloudflare.com/backend/api';
 
 class ApiService {
   async searchFlights(params: any) {

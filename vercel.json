@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/backend/:path*",
-      "destination": "http://72.61.179.63:4000/:path*"
+      "destination": "https://chuck-extent-compiled-plate.trycloudflare.com/backend/:path*"
     },
     {
       "source": "/((?!backend/).*)",

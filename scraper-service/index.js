@@ -8,7 +8,11 @@ const path = require('path');
 const app = express();
 const PORT = 4000;
 
-app.use(cors());
+app.use(cors({
+  origin: '*', // Configured to allow requests from Vercel production domain and local development
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 const ZENROWS_API_KEY = 'd56d2641a481f21a7ae7f51760ef5162bb18cdad';

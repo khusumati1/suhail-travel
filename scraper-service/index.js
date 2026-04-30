@@ -693,7 +693,7 @@ async function scrapeHotelsFromDOM(page, params) {
             } catch (e) {}
           }
           return [];
-        }, { cityId, fCheckIn, fCheckOut, adultsCount });
+        }, [{ cityId, fCheckIn, fCheckOut, adultsCount }]);
 
         if (apiHotels && apiHotels.length > 0) {
           console.log(`[Direct] ✅ Strategy 3 SUCCESS: Found ${apiHotels.length} hotels.`);
@@ -774,19 +774,19 @@ app.post('/api/scrape-hotels', async (req, res) => {
     });
 
     // BACKEND RESPONSE GUARD: Prevent empty results if any data was captured
-    if ((!hotels || hotels.length === 0)) {
+    const safeHotels = Array.isArray(hotels) ? hotels : [];
+    
+    if (safeHotels.length === 0) {
       console.warn(`[Vault] Guard: Hotels list is empty. Final check...`);
-      // In this version, scrapeHotelsFromDOM is a promise that resolves with data.
-      // If it returned [], we truly found nothing.
     }
 
-    if (!hotels || hotels.length === 0) {
+    if (safeHotels.length === 0) {
       console.warn(`[DOM Scraper] No hotels found for ${cityName}. Returning empty list.`);
       return res.json({ success: true, data: { hotels: [] } });
     }
 
     // Update Caches
-    SMART_CACHE.set('hotels', cacheKey, hotels);
+    SMART_CACHE.set('hotels', cacheKey, safeHotels);
     try {
       await supabase.from('search_cache').upsert({
         key: cacheKey,
@@ -973,7 +973,8 @@ async function scrapeFlightsFromDOM(page, params) {
       });
 
       console.log(`[Flight DOM] Successfully extracted ${flights.length} flights.`);
-      return flights.map(f => ({ ...f, origin, destination }));
+      const safeFlights = Array.isArray(flights) ? flights : [];
+      return safeFlights.map(f => ({ ...f, origin, destination }));
 
     } catch (error) {
       const isContextError =

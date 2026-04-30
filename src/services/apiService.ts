@@ -11,7 +11,7 @@ export interface HotelSearchResult {
   errorMessage?: string;
 }
 
-const API_URL = 'https://chuck-extent-compiled-plate.trycloudflare.com/backend/api';
+const API_URL = '/api';
 
 class ApiService {
   async searchFlights(params: any) {
@@ -64,6 +64,7 @@ class ApiService {
       console.log(`[ApiService] Received Status Code: ${response.status}`);
       const body = response.data;
       console.log("🚀 Server Response:", body);
+      console.log(`[ApiService] Backend claims to have found: ${body.count} items`);
 
       // Backend explicitly signals failure (e.g. geo-resolution or upstream error)
       if (body.success === false) {

@@ -25,18 +25,29 @@ async function scrapeHotelsWithZenRows(params) {
   const fCheckIn = checkIn.split('T')[0];
   const fCheckOut = checkOut.split('T')[0];
   const slug = `${cityName}-${cityId}`;
-  const searchUrl = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}&step=plp&from=search`;
+  const searchUrl = `https://sindibad.iq/hotels/${slug}?cityNameLocale=${encodeURIComponent(cityName)}&country=Iraq&checkIn=${fCheckIn}&checkOut=${fCheckOut}&countryId=17&searchType=City&rooms=${adultsCount}`;
 
   console.log(`[ZenRows] 🚀 Mission Start: ${cityName} via Managed Proxy`);
   
-  const proxyUrl = `https://api.zenrows.com/v1/?apikey=${ZENROWS_API_KEY}&url=${encodeURIComponent(searchUrl)}&js_render=true&premium_proxy=true&wait_for=[data-testid="hotel-card"]&wait=5000`;
+  const proxyUrl = `https://api.zenrows.com/v1/?apikey=${ZENROWS_API_KEY}&url=${encodeURIComponent(searchUrl)}&js_render=true&premium_proxy=true&wait_for=5000&autoparse=true`;
+
+  const maskedUrl = proxyUrl.replace(ZENROWS_API_KEY, 'HIDDEN_KEY');
+  console.log(`[ZenRows] Requesting URL: ${maskedUrl}`);
 
   try {
-    const response = await axios.get(proxyUrl, { timeout: 60000 });
-    const $ = cheerio.load(response.data);
+    const response = await axios.get(proxyUrl, { timeout: 90000 });
+    const html = response.data;
+    
+    // Advanced Debugging
+    console.log("Response Status from ZenRows:", response.status);
+    console.log("HTML Length captured:", html.length);
+    if (html.length < 1000) console.log("WARNING: Captured HTML seems too short. Possible block or empty page.");
+
+    const $ = cheerio.load(html);
     const results = [];
 
-    $('div, article').each((i, el) => {
+    // Robust Selectors: elements that contain images with "assets.sindibad.iq"
+    $('div, article, section, li').each((i, el) => {
       const card = $(el);
       const imgNode = card.find('img[src*="assets.sindibad.iq"]');
       
@@ -68,7 +79,7 @@ async function scrapeHotelsWithZenRows(params) {
     return uniqueHotels;
   } catch (error) {
     console.error(`[ZenRows] ❌ Mission FAILED: ${error.message}`);
-    return [];
+    return { success: false, status: 504, message: "The server is busy, please try again in 5 seconds." };
   }
 }
 
@@ -90,9 +101,19 @@ apiRouter.post('/scrape-hotels', async (req, res) => {
     else targetId = 3484; // Basra fallback
   }
 
-  const hotels = await scrapeHotelsWithZenRows({ cityName, cityId: targetId, checkIn, checkOut, adultsCount });
+  const result = await scrapeHotelsWithZenRows({ cityName, cityId: targetId, checkIn, checkOut, adultsCount });
 
-  res.json({ success: true, data: hotels, count: hotels.length });
+  if (Array.isArray(result) && result.length > 0) {
+    res.json({ success: true, data: result, count: result.length });
+  } else if (result && result.status === 504) {
+    res.status(504).json({ success: false, message: result.message });
+  } else {
+    res.status(200).json({ 
+      success: false, 
+      message: "No hotels found on the target page", 
+      debug_info: "Selector X not found" 
+    });
+  }
 });
 
 // Hotel Details (Mocked since Puppeteer is removed)

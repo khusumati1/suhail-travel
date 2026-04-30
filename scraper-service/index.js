@@ -486,6 +486,44 @@ async function waitForUrlToStabilize(page, stableDuration = 3000, maxWait = 2000
  * FALLBACK: If interception doesn't capture data, attempt aggressive DOM scraping
  * with a full class/structure dump for debugging.
  */
+/**
+ * Helper: Map Sindibad raw JSON to our standard Hotel interface
+ */
+function mapSindibadHotel(h, index) {
+  // Name extraction - be very aggressive with fallbacks
+  let name = h.hotel_name || h.name || h.hotelName || h.hotel_title || h.title?.ar || h.title?.en || `Hotel ${index + 1}`;
+  if (typeof name === 'object') name = name.ar || name.en || name.title || `Hotel ${index + 1}`;
+
+  // Price extraction - covers multiple API versions/structures
+  let price = 0;
+  try {
+    if (h.price?.total) price = h.price.total;
+    else if (h.totalPrice) price = h.totalPrice;
+    else if (h.min_price) price = h.min_price;
+    else if (h.minPrice) price = h.minPrice;
+    else if (h.startingPrice) price = h.startingPrice;
+    else if (h.price) price = typeof h.price === 'number' ? h.price : (h.price.amount || h.price.value || 0);
+  } catch (e) { price = 0; }
+  
+  // Convert price to number if it's a string (e.g. "125,000")
+  if (typeof price === 'string') price = parseInt(price.replace(/,/g, ''), 10) || 0;
+
+  // Image extraction
+  const image = h.mainImage || h.thumbnail || h.image || h.imageUrl || h.thumb ||
+               (h.images && h.images[0]?.url) || (h.images && h.images[0]) || 'https://picsum.photos/400/300';
+
+  return {
+    hotelId: h.id || h.hotelId || h.hotel_id || h.hotelID || `api-${index}-${Date.now()}`,
+    name: name,
+    price: price,
+    currency: h.price?.currency || h.currency || 'IQD',
+    image: image,
+    stars: h.star || h.stars || h.rating_star || 4,
+    rating: h.rate || h.rating || h.score || h.total_rate || 8.5,
+    location: h.address?.ar || h.address?.en || h.location || h.city || h.address || ''
+  };
+}
+
 async function scrapeHotelsFromDOM(page, params) {
   const { cityName, cityId, checkIn, checkOut, adultsCount } = params;
 
@@ -511,6 +549,7 @@ async function scrapeHotelsFromDOM(page, params) {
       const responseHandler = async (response) => {
         try {
           const reqUrl = response.url();
+          // Look for hotel search or poll results
           const isHotelAPI = (reqUrl.includes('hotel') && reqUrl.includes('search')) || reqUrl.includes('poll-results');
           
           if (isHotelAPI && response.status() === 200) {
@@ -520,12 +559,21 @@ async function scrapeHotelsFromDOM(page, params) {
               
               // Extract hotel list from various possible structures
               const hotelList = json.result?.hotels || json.data?.hotels || json.result || json.data || json.hotels || [];
-              const finalHotels = Array.isArray(hotelList) ? hotelList : (Object.values(hotelList).find(v => Array.isArray(v)) || []);
+              const rawHotels = Array.isArray(hotelList) ? hotelList : (Object.values(hotelList).find(v => Array.isArray(v)) || []);
 
-              if (finalHotels.length > 0) {
-                console.log(`[Intercept] ✅ Strategy 1 SUCCESS (Fast Exit) from: ${reqUrl.split('?')[0]}`);
-                interceptedHotels = finalHotels;
-                resolveInterception(finalHotels);
+              if (rawHotels.length > 0) {
+                // Map the hotels using our helper
+                const mapped = rawHotels.map((h, i) => mapSindibadHotel(h, i)).filter(h => h.price > 0);
+                
+                if (mapped.length > 0) {
+                  console.log(`[Intercept] ✅ Strategy 1 SUCCESS: Caught ${mapped.length} hotels. KILLING further strategies.`);
+                  
+                  // IMMEDIATE KILL: Close the page to stop any further network/DOM activity
+                  await page.close().catch(() => {});
+                  
+                  // Resolve the promise with our data
+                  resolveInterception(mapped);
+                }
               }
             }
           }
@@ -543,60 +591,52 @@ async function scrapeHotelsFromDOM(page, params) {
       };
       page.on('request', requestLogger);
 
-      // 1. Navigate to the search page
-      console.log(`[Hotel Scraper] Navigating to Sindibad...`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-      // 2. Wait for either Interception SUCCESS or a short Settle Timeout
-      // We wait up to 10 seconds for interception, but proceed to DOM after 3s if nothing caught
-      const fastExit = await Promise.race([
+      // 1. Navigation & Interception RACE (Extreme Early Exit)
+      console.log(`[Hotel Scraper] Racing Navigation & Interception...`);
+      
+      const hotels = await Promise.race([
         interceptionPromise,
-        wait(8000).then(() => null) // Max 8s wait for interception before fallback
+        (async () => {
+          try {
+            // Navigate and wait for some settling, unless closed by interception
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await wait(12000);
+          } catch (e) {
+            // If page is closed by interception, this error is expected
+            if (e.message.includes('Target closed') || e.message.includes('closed')) {
+               // We just wait for the interceptionPromise to win the race
+               await wait(1000); 
+            } else {
+               console.warn(`[Hotel Scraper] Navigation warning: ${e.message}`);
+            }
+          }
+          return null;
+        })(),
+        wait(30000).then(() => null) // Absolute safety timeout
       ]);
 
-      if (!fastExit) {
-        console.log(`[Hotel Scraper] No early interception, proceeding with SPA settle and DOM fallback...`);
-        await wait(3000); // Minimal settle time for SPA hydration
-        await ensurePageIsReady(page);
-        
-        // Scroll to trigger any lazy loading as last resort
-        await safeEvaluate(page, async () => {
-          window.scrollBy(0, 1000);
-          await new Promise(r => setTimeout(r, 500));
-          window.scrollTo(0, 0);
-        }).catch(() => { });
-      }
+      // Clean up listeners immediately (if page still exists)
+      try {
+        page.off('response', responseHandler);
+        page.off('request', requestLogger);
+      } catch (e) {}
 
-      // Clean up listeners immediately
-      page.off('response', responseHandler);
-      page.off('request', requestLogger);
-
-      // ============================================================
-      // Result Processing
-      // ============================================================
-      if (interceptedHotels && interceptedHotels.length > 0) {
-        console.log(`[Hotel Scraper] ✅ Strategy 1 SUCCESS: ${interceptedHotels.length} hotels from network interception`);
-
-        // Normalize the intercepted data to our standard format
-        const hotels = interceptedHotels.map((h, index) => {
-          const name = h.title?.ar || h.title?.en || h.name || h.hotelName || `Hotel ${index + 1}`;
-          const price = h.minPrice || h.price || h.startingPrice || h.min_price || 0;
-          const imgUrl = h.image || h.imageUrl || h.thumbnail ||
-            (h.images && h.images[0]?.url) || (h.images && h.images[0]) || '';
-
-          return {
-            hotelId: h.id || h.hotelId || h.hotel_id || `api-${index}-${Date.now()}`,
-            name: typeof name === 'string' ? name : (name?.ar || name?.en || `Hotel ${index + 1}`),
-            price: typeof price === 'number' ? price : parseInt(String(price).replace(/,/g, ''), 10) || 0,
-            image: imgUrl || 'https://picsum.photos/400/300',
-            stars: h.star || h.stars || h.rating_star || 4,
-            rating: h.rate || h.rating || h.score || 8.5,
-            location: h.address?.ar || h.address?.en || h.location || h.city || ''
-          };
-        }).filter(h => h.price > 0);
-
+      // FINAL EXIT: If we have hotels, return them and STOP.
+      if (hotels && hotels.length > 0) {
+        console.log(`[Hotel Scraper] 🏆 Returning ${hotels.length} hotels to the controller.`);
         return hotels;
       }
+
+      console.log(`[Hotel Scraper] No early interception, proceeding with SPA settle and DOM fallback...`);
+      await wait(3000); // Minimal settle time for SPA hydration
+      await ensurePageIsReady(page);
+      
+      // Scroll to trigger any lazy loading as last resort
+      await safeEvaluate(page, async () => {
+        window.scrollBy(0, 1000);
+        await new Promise(r => setTimeout(r, 500));
+        window.scrollTo(0, 0);
+      }).catch(() => { });
 
       console.warn(`[Hotel Scraper] Strategy 1 (Network Interception) did not capture data. Trying Strategy 2 (DOM)...`);
 

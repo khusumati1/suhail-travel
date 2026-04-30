@@ -102,9 +102,16 @@ const HotelList = () => {
         setError(result.errorMessage || 'تعذر جلب نتائج الفنادق حالياً.');
         setOriginalHotels([]);
       } else {
-        setOriginalHotels(result.data);
+        const hotelsData = result.data;
+        console.log("🏨 Rendering Hotels:", hotelsData);
+        
+        if (!hotelsData || hotelsData.length === 0) {
+          console.warn("UI received ZERO hotels from backend");
+        }
+        
+        setOriginalHotels(hotelsData);
         // Initialize price range based on actual data
-        const prices = result.data.map((h: any) => parseInt(String(h.price).replace(/,/g, ''))).filter((p: any) => !isNaN(p));
+        const prices = hotelsData.map((h: any) => parseInt(String(h.price).replace(/,/g, ''))).filter((p: any) => !isNaN(p));
         if (prices.length > 0) {
           setFilters(prev => ({ ...prev, priceRange: [Math.min(...prices), Math.max(...prices)] }));
         }

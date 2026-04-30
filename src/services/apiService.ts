@@ -61,7 +61,7 @@ class ApiService {
       });
 
       const body = response.data;
-      console.log('[ApiService] Hotels response:', body);
+      console.log("🚀 Server Response:", body);
 
       // Backend explicitly signals failure (e.g. geo-resolution or upstream error)
       if (body.success === false) {
@@ -77,7 +77,13 @@ class ApiService {
 
       // Apply the same 10% profit margin as flights
       const PROFIT_MARGIN = 1.10;
-      const hotels: HotelOffer[] = (body.data?.hotels || []).map((h: any) => ({
+      const hotelsData = body.data?.hotels || body.data || [];
+      
+      if (Array.isArray(hotelsData) && hotelsData.length === 0) {
+        console.error("DEBUG: Backend returned success=true but data is EMPTY");
+      }
+
+      const hotels: HotelOffer[] = (Array.isArray(hotelsData) ? hotelsData : []).map((h: any) => ({
         ...h,
         price: typeof h.price === 'string'
           ? (parseInt(h.price.replace(/,/g, ''), 10) * PROFIT_MARGIN).toLocaleString()

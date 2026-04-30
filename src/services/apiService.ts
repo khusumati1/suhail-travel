@@ -11,7 +11,7 @@ export interface HotelSearchResult {
   errorMessage?: string;
 }
 
-const SCRAPER_BASE_URL = 'http://72.61.179.63:4000/backend/api';
+const API_URL = 'http://72.61.179.63:4000/backend/api';
 
 class ApiService {
   async searchFlights(params: any) {
@@ -26,7 +26,7 @@ class ApiService {
 
     try {
       // Direct call to the local scraper service
-      const response = await axios.post(`${SCRAPER_BASE_URL}/scrape-flights`, payload);
+      const response = await axios.post(`${API_URL}/scrape-flights`, payload);
 
       console.log('[ApiService] Scraper response received:', response.data);
 
@@ -49,8 +49,8 @@ class ApiService {
 
   async searchHotels(params: any): Promise<HotelSearchResult> {
     try {
-      const fullUrl = `${SCRAPER_BASE_URL}/scrape-hotels`;
-      console.log(`[ApiService] Calling VPS Scraper: ${fullUrl}`);
+      const fullUrl = `${API_URL}/scrape-hotels`;
+      console.log(`[ApiService] Destination URL: ${fullUrl}`);
       const response = await axios.post(fullUrl, {
         cityName: params.city || params.location,
         cityId: params.cityId || null,
@@ -61,6 +61,7 @@ class ApiService {
         childrenAges: params.childrenAges || []
       });
 
+      console.log(`[ApiService] Received Status Code: ${response.status}`);
       const body = response.data;
       console.log("🚀 Server Response:", body);
 
@@ -81,8 +82,7 @@ class ApiService {
       const hotelsData = body.data?.hotels || body.data || [];
       
       if (Array.isArray(hotelsData) && hotelsData.length === 0) {
-        console.error("DEBUG: Backend returned success=true but data is EMPTY");
-        throw new Error("FATAL: No hotel data received from the server. Please check the scraper logs.");
+        console.warn("DEBUG: Backend returned empty array for hotels.");
       }
 
       const hotels: HotelOffer[] = (Array.isArray(hotelsData) ? hotelsData : []).map((h: any) => ({
@@ -95,6 +95,10 @@ class ApiService {
       return { success: true, data: hotels };
     } catch (error) {
       const axiosErr = error as AxiosError<any>;
+      const statusCode = axiosErr.response?.status || 'Unknown';
+      console.error(`[ApiService] Destination URL Failed: ${API_URL}/scrape-hotels`);
+      console.error(`[ApiService] Received Error Status Code: ${statusCode}`);
+      
       // Extract the structured error body returned by our 502 endpoint, if available
       const serverMessage =
         axiosErr.response?.data?.message ||
@@ -124,7 +128,7 @@ class ApiService {
 
   async fetchHotelDetails(payload: any) {
     try {
-      const response = await axios.post(`${SCRAPER_BASE_URL}/hotel-details`, payload);
+      const response = await axios.post(`${API_URL}/hotel-details`, payload);
       // response.data contains description, rating, images, rooms
       return response.data;
     } catch (error) {
@@ -147,7 +151,7 @@ class ApiService {
 
   async createBooking(payload: any) {
     try {
-      const response = await axios.post(`${SCRAPER_BASE_URL}/create-booking`, payload);
+      const response = await axios.post(`${API_URL}/create-booking`, payload);
       return response.data;
     } catch (error) {
       console.error('[ApiService] Error creating booking:', error);
@@ -157,7 +161,7 @@ class ApiService {
 
   async getBookings() {
     try {
-      const response = await axios.get(`${SCRAPER_BASE_URL}/bookings`);
+      const response = await axios.get(`${API_URL}/bookings`);
       return response.data;
     } catch (error) {
       console.error('[ApiService] Error fetching bookings:', error);

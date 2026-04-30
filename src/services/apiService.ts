@@ -11,7 +11,7 @@ export interface HotelSearchResult {
   errorMessage?: string;
 }
 
-const SCRAPER_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000';
+const SCRAPER_BASE_URL = 'http://72.61.179.63:4000/backend/api';
 
 class ApiService {
   async searchFlights(params: any) {
@@ -26,7 +26,7 @@ class ApiService {
 
     try {
       // Direct call to the local scraper service
-      const response = await axios.post(`${SCRAPER_BASE_URL}/api/scrape-flights`, payload);
+      const response = await axios.post(`${SCRAPER_BASE_URL}/scrape-flights`, payload);
 
       console.log('[ApiService] Scraper response received:', response.data);
 
@@ -49,8 +49,9 @@ class ApiService {
 
   async searchHotels(params: any): Promise<HotelSearchResult> {
     try {
-      console.log('[ApiService] Fetching hotels from scraper...', params);
-      const response = await axios.post(`${SCRAPER_BASE_URL}/api/scrape-hotels`, {
+      const fullUrl = `${SCRAPER_BASE_URL}/scrape-hotels`;
+      console.log(`[ApiService] Calling VPS Scraper: ${fullUrl}`);
+      const response = await axios.post(fullUrl, {
         cityName: params.city || params.location,
         cityId: params.cityId || null,
         countryId: params.countryId || 17,
@@ -123,7 +124,7 @@ class ApiService {
 
   async fetchHotelDetails(payload: any) {
     try {
-      const response = await axios.post(`${SCRAPER_BASE_URL}/api/hotel-details`, payload);
+      const response = await axios.post(`${SCRAPER_BASE_URL}/hotel-details`, payload);
       // response.data contains description, rating, images, rooms
       return response.data;
     } catch (error) {
@@ -146,7 +147,7 @@ class ApiService {
 
   async createBooking(payload: any) {
     try {
-      const response = await axios.post(`${SCRAPER_BASE_URL}/api/create-booking`, payload);
+      const response = await axios.post(`${SCRAPER_BASE_URL}/create-booking`, payload);
       return response.data;
     } catch (error) {
       console.error('[ApiService] Error creating booking:', error);
@@ -156,7 +157,7 @@ class ApiService {
 
   async getBookings() {
     try {
-      const response = await axios.get(`${SCRAPER_BASE_URL}/api/bookings`);
+      const response = await axios.get(`${SCRAPER_BASE_URL}/bookings`);
       return response.data;
     } catch (error) {
       console.error('[ApiService] Error fetching bookings:', error);
